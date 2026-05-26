@@ -1,0 +1,217 @@
+// ============================================
+// services/integrationService.js
+// Shared logic for all 6 integrations:
+//   - Store / retrieve OAuth tokens (encrypted)
+//   - Deduplicate incoming events
+//   - Queue and fire review requests with delay
+//   - Track stats + errors
+// ============================================
+
+const { query }   = require('../database/db');
+const { encrypt, decrypt } = require('../middleware/encrypt');
+const { sendReviewRequest } = require('./reviewRequestSender');
+const logger      = require('../utils/logger');
+
+// ── TOKEN STORAGE ─────────────────────────────────────────────────────────────
+
+async function saveIntegration(locationId, provider, data) {
+  const {
+    accessToken, refreshToken, tokenExpiresAt,
+    extraData, triggerEvent, delayMinutes, templateId
+  } = data;
+
+  const encAccess  = accessToken  ? encrypt(accessToken)  : null;
+  const encRefresh = refreshToken ? encrypt(refreshToken) : null;
+
+  await query(
+    `INSERT INTO integrations
+       (location_id, provider, status, access_token, refresh_token,
+        token_expires_at, extra_data, trigger_event, delay_minutes, template_id)
+     VALUES ($1,$2,'connected',$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (location_id, provider) DO UPDATE SET
+       status          = 'connected',
+       access_token    = COALESCE(EXCLUDED.access_token, integrations.access_token),
+       refresh_token   = COALESCE(EXCLUDED.refresh_token, integrations.refresh_token),
+       token_expires_at = COALESCE(EXCLUDED.token_expires_at, integrations.token_expires_at),
+       extra_data      = COALESCE(EXCLUDED.extra_data, integrations.extra_data),
+       trigger_event   = COALESCE(EXCLUDED.trigger_event, integrations.trigger_event),
+       delay_minutes   = COALESCE(EXCLUDED.delay_minutes, integrations.delay_minutes),
+       template_id     = COALESCE(EXCLUDED.template_id, integrations.template_id),
+       last_error      = NULL,
+       updated_at      = NOW()`,
+    [locationId, provider, encAccess, encRefresh,
+     tokenExpiresAt || null, extraData ? JSON.stringify(extraData) : null,
+     triggerEvent || null, delayMinutes ?? 60, templateId || null]
+  );
+}
+
+async function getIntegration(locationId, provider) {
+  const res = await query(
+    `SELECT i.*, l.customer_id,
+            l.business_name, l.business_type, l.city
+     FROM integrations i
+     JOIN locations l ON l.id = i.location_id
+     WHERE i.location_id = $1 AND i.provider = $2`,
+    [locationId, provider]
+  );
+  if (!res.rows[0]) return null;
+  const row = res.rows[0];
+  if (row.access_token)  row.access_token  = decrypt(row.access_token);
+  if (row.refresh_token) row.refresh_token = decrypt(row.refresh_token);
+  return row;
+}
+
+async function getIntegrationByProvider(provider, extraMatch) {
+  // Find integration matching provider + extra_data field (e.g. shop domain)
+  const res = await query(
+    `SELECT i.*, l.id as loc_id, l.customer_id,
+            l.business_name, l.business_type
+     FROM integrations i
+     JOIN locations l ON l.id = i.location_id
+     WHERE i.provider = $1
+       AND i.status = 'connected'
+       AND i.extra_data @> $2::jsonb`,
+    [provider, JSON.stringify(extraMatch)]
+  );
+  if (!res.rows[0]) return null;
+  const row = res.rows[0];
+  if (row.access_token)  row.access_token  = decrypt(row.access_token);
+  if (row.refresh_token) row.refresh_token = decrypt(row.refresh_token);
+  return row;
+}
+
+async function disconnectIntegration(locationId, provider) {
+  await query(
+    `UPDATE integrations SET status='disconnected', access_token=NULL,
+       refresh_token=NULL, updated_at=NOW()
+     WHERE location_id=$1 AND provider=$2`,
+    [locationId, provider]
+  );
+}
+
+async function listIntegrations(locationId) {
+  const res = await query(
+    `SELECT provider, status, trigger_event, delay_minutes,
+            triggers_received, requests_sent, last_triggered_at,
+            last_error, last_error_at, extra_data, created_at
+     FROM integrations WHERE location_id = $1
+     ORDER BY created_at`,
+    [locationId]
+  );
+  return res.rows;
+}
+
+// ── EVENT DEDUPLICATION ───────────────────────────────────────────────────────
+
+async function isDuplicate(provider, externalId) {
+  if (!externalId) return false;
+  const res = await query(
+    `SELECT 1 FROM integration_events
+     WHERE provider=$1 AND external_id=$2 LIMIT 1`,
+    [provider, externalId]
+  );
+  return res.rows.length > 0;
+}
+
+async function logEvent(integrationId, provider, eventType, externalId, payload) {
+  const res = await query(
+    `INSERT INTO integration_events
+       (integration_id, provider, event_type, external_id, payload)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (provider, external_id) WHERE external_id IS NOT NULL
+     DO NOTHING
+     RETURNING id`,
+    [integrationId, provider, eventType, externalId || null,
+     JSON.stringify(payload)]
+  );
+  return res.rows[0]?.id;
+}
+
+async function markEventProcessed(eventId, reviewRequestSent, error = null) {
+  await query(
+    `UPDATE integration_events
+     SET processed=true, review_request_sent=$2, error=$3
+     WHERE id=$1`,
+    [eventId, reviewRequestSent, error]
+  );
+}
+
+// ── REVIEW REQUEST TRIGGER ────────────────────────────────────────────────────
+
+/**
+ * triggerReviewRequest
+ * Called by every integration when a qualifying event fires.
+ * Gets the default template for the location and sends immediately
+ * (or after a configured delay).
+ */
+async function triggerReviewRequest(integration, contact, eventId) {
+  try {
+    // Get default template for this location
+    const tmplRes = await query(
+      `SELECT id FROM review_request_templates
+       WHERE location_id = $1 AND is_default = true
+       LIMIT 1`,
+      [integration.location_id]
+    );
+
+    const templateId = integration.template_id || tmplRes.rows[0]?.id;
+    if (!templateId) {
+      logger.warn(`No template for integration ${integration.id}`);
+      return { success: false, error: 'No review request template configured' };
+    }
+
+    // Get full location row
+    const locRes = await query(
+      'SELECT * FROM locations WHERE id = $1',
+      [integration.location_id]
+    );
+    const location = locRes.rows[0];
+    if (!location) return { success: false, error: 'Location not found' };
+
+    const result = await sendReviewRequest({
+      templateId,
+      contact,
+      location,
+      customerId: integration.customer_id,
+    });
+
+    // Update stats
+    await query(
+      `UPDATE integrations
+       SET triggers_received = triggers_received + 1,
+           requests_sent     = requests_sent + CASE WHEN $2 THEN 1 ELSE 0 END,
+           last_triggered_at = NOW(),
+           last_error        = CASE WHEN $2 THEN NULL ELSE $3 END,
+           last_error_at     = CASE WHEN $2 THEN NULL ELSE NOW() END,
+           updated_at        = NOW()
+       WHERE id = $1`,
+      [integration.id, result.success, result.error || null]
+    );
+
+    if (eventId) {
+      await markEventProcessed(eventId, result.success, result.error);
+    }
+
+    return result;
+  } catch (err) {
+    logger.error(`triggerReviewRequest error [${integration.provider}]:`, err.message);
+    await query(
+      `UPDATE integrations SET
+         triggers_received = triggers_received + 1,
+         last_error        = $2,
+         last_error_at     = NOW(),
+         status            = 'error',
+         updated_at        = NOW()
+       WHERE id = $1`,
+      [integration.id, err.message]
+    );
+    return { success: false, error: err.message };
+  }
+}
+
+module.exports = {
+  saveIntegration, getIntegration, getIntegrationByProvider,
+  disconnectIntegration, listIntegrations,
+  isDuplicate, logEvent, markEventProcessed,
+  triggerReviewRequest,
+};
