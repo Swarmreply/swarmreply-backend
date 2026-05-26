@@ -95,3 +95,4 @@ async function testConnection() {
 }
 
 module.exports = { query, getClient, testConnection };
+
