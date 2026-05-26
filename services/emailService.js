@@ -18,7 +18,7 @@ function getResend() {
  */
 async function sendWeeklyDigest(customer) {
   try {
-    await resend.emails.send({
+    await getResend().emails.send({
       from: process.env.EMAIL_FROM,
       to: customer.email,
       subject: `Your SwarmReply Weekly Summary 🐝`,
@@ -68,7 +68,7 @@ async function sendWeeklyDigest(customer) {
  */
 async function sendWelcomeEmail(customer, locationName) {
   try {
-    await resend.emails.send({
+    await getResend().emails.send({
       from: process.env.EMAIL_FROM,
       to: customer.email,
       subject: `Your swarm is live 🐝 — ${locationName}`,
@@ -95,7 +95,7 @@ async function sendWelcomeEmail(customer, locationName) {
  */
 async function sendConnectionErrorAlert(customer, locationName) {
   try {
-    await resend.emails.send({
+    await getResend().emails.send({
       from: process.env.EMAIL_FROM,
       to: customer.email,
       subject: `Action needed — SwarmReply connection issue`,
@@ -129,7 +129,7 @@ async function sendWelcomeWithCredentials({ email, name, plan, tempPassword, res
   const price     = prices[plan] || '$99';
 
   try {
-    await resend.emails.send({
+    await getResend().emails.send({
       from:    process.env.EMAIL_FROM || 'hello@swarmreply.com',
       to:      email,
       subject: `Welcome to SwarmReply — your login details`,
