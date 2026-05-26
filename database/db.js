@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 // Pool manages multiple connections efficiently
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true, ca: process.env.DB_SSL_CERT || undefined } : false,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
   max: 20,          // maximum pool connections
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
