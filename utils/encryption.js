@@ -1,4 +1,4 @@
-jsconst crypto = require('crypto');
+const crypto = require('crypto');
 const ALGORITHM = 'aes-256-gcm';
 let _key = null;
 
