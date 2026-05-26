@@ -6,7 +6,11 @@
 const { Resend } = require('resend');
 const logger = require('../utils/logger');
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resend;
+function getResend() {
+  if (!resend) resend = new Resend(process.env.RESEND_API_KEY || 'placeholder');
+  return resend;
+}
 
 /**
  * sendWeeklyDigest()
