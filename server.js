@@ -190,7 +190,7 @@ async function startServer() {
   const dbConnected = await testConnection();
 
   if (!dbConnected) {
-    logger.error('Cannot connect to database — starting anyway, will retry');
+    logger.warn('Database connection failed — starting server anyway, will retry on requests');
   }
 
   // Start HTTP server
@@ -198,12 +198,6 @@ async function startServer() {
     logger.info(`SwarmReply backend running on port ${PORT}`);
     logger.info(`Environment: ${process.env.NODE_ENV}`);
   });
-
-  // Start the review processing scheduler
-  startScheduler();
-}
-
-startServer();
 
   // Start the review processing scheduler
   startScheduler();
