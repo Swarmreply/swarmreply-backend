@@ -10,7 +10,7 @@ const { query } = require('../database/db');
 const { previewTemplate } = require('./reviewRequestService');
 const logger = require('../utils/logger');
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let _resend = null; function getResend() { if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder'); return _resend; }
 
 // Twilio client — lazy init so app starts without Twilio if not configured
 let twilioClient = null;
@@ -175,7 +175,7 @@ async function sendBulk(contacts, templateId, location, customerId) {
 // ============================================
 
 async function sendEmail(rendered, contact, location) {
-  const result = await resend.emails.send({
+  const result = await getResend().emails.send({
     from: `${location.business_name} <${process.env.REVIEW_REQUEST_FROM_EMAIL || process.env.EMAIL_FROM}>`,
     to: contact.email,
     subject: rendered.subject || `How was your experience at ${location.business_name}?`,
