@@ -8,6 +8,8 @@ const router = express.Router();
 const { query } = require('../database/db');
 const googleService = require('../services/googleService');
 const logger = require('../utils/logger');
+const { authenticateToken } = require('../middleware/auth');
+const { auditLog } = require('../middleware/audit');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // ============================================
