@@ -65,6 +65,7 @@ app.use((req, res, next) => {
 // CORS — locked to your frontend only
 const allowedOrigins = [
   process.env.FRONTEND_URL,
+  'https://app.swarmreply.com',
   ...(isProd ? [] : ['http://localhost:3000']),
 ].filter(Boolean);
 
