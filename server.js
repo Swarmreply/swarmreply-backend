@@ -190,8 +190,8 @@ async function startServer() {
   const dbConnected = await testConnection();
 
   if (!dbConnected) {
-    logger.error('Cannot connect to database — server not started');
-    process.exit(1);
+    logger.error('Cannot connect to database — starting anyway, will retry');
+  }
   }
 
   // Start HTTP server
