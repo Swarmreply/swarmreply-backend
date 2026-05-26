@@ -26,14 +26,14 @@ const PLANS = {
   starter: {
     name:       'Starter',
     price:      99,
-    priceId:    process.env.STRIPE_PRICE_STARTER,
+    priceId:    process.env.STRIPE_PRICE_BASE_MONTHLY,
     locations:  1,
     features:   ['1 location', 'AI review replies', 'NPS surveys', 'Listings sync', 'Zapier integration']
   },
   growth: {
     name:       'Growth',
     price:      199,
-    priceId:    process.env.STRIPE_PRICE_GROWTH,
+    priceId:    process.env.STRIPE_PRICE_BASE_MONTHLY,
     locations:  5,
     features:   ['Up to 5 locations', 'Everything in Starter', 'Competitor benchmarking', '15-language replies', 'Priority support']
   },

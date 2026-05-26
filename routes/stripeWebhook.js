@@ -46,7 +46,16 @@ const PRICE_TO_PLAN = {
 };
 
 function getPlanFromPriceId(priceId) {
-  return PRICE_TO_PLAN[priceId] || 'starter';
+  const map = {
+    [process.env.STRIPE_PRICE_BASE_MONTHLY]:            'starter',
+    [process.env.STRIPE_PRICE_BASE_ANNUAL]:             'starter',
+    [process.env.STRIPE_PRICE_LOCATION_MONTHLY]:        'starter',
+    [process.env.STRIPE_PRICE_LOCATION_ANNUAL]:         'starter',
+    // Legacy price IDs
+    [process.env.STRIPE_PRICE_STARTER]:                 'starter',
+    [process.env.STRIPE_PRICE_GROWTH]:                  'growth',
+  };
+  return map[priceId] || 'starter';
 }
 
 // ============================================
