@@ -390,7 +390,10 @@ const stripeWebhookHandler = async (req, res) => {
     logger.error(`Stripe webhook handler error for ${event.type}:`, error.message);
     res.status(500).json({ error: 'Webhook handler failed' });
   }
-});
+};
+
+router.post('/webhooks/stripe', stripeWebhookHandler);
+router.post('/stripe/webhook', stripeWebhookHandler);
 
 /**
  * getPlanFromPriceId()
