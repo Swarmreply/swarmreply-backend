@@ -89,6 +89,7 @@ app.use((req, res, next) => {
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   'https://app.swarmreply.com',
+  'https://admin.swarmreply.com',
   ...(isProd ? [] : ['http://localhost:3000']),
 ].filter(Boolean);
 
