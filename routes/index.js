@@ -263,7 +263,6 @@ router.post('/webhooks/stripe', async (req, res) => {
         const subscriptionId   = session.subscription;
 
         logger.info(`checkout.session.completed for ${email}`);
-        logger.info('DB URL first 20: ' + (process.env.DATABASE_URL || 'NOT SET').substring(0, 20));
 
         if (!email) {
           logger.error('checkout.session.completed: no email found');
@@ -302,8 +301,10 @@ router.post('/webhooks/stripe', async (req, res) => {
             await emailService.sendWelcomeWithCredentials({
               email,
               name,
+              plan: 'starter',
               tempPassword,
-              loginUrl: process.env.FRONTEND_URL + '/login' || 'https://app.swarmreply.com/login',
+              resetUrl: 'https://app.swarmreply.com/reset-password',
+              dashUrl:  'https://app.swarmreply.com/dashboard',
             });
 
             await query(
