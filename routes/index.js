@@ -8,8 +8,6 @@ const router = express.Router();
 const { query } = require('../database/db');
 const googleService = require('../services/googleService');
 const logger = require('../utils/logger');
-const { authenticateToken } = require('../middleware/auth');
-const { auditLog } = require('../middleware/audit');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // ============================================
@@ -231,7 +229,7 @@ router.get('/stats', authenticateToken, async (req, res) => {
 // POST /api/webhooks/stripe
 // Handle Stripe subscription events
 // IMPORTANT: Use raw body parser for this route (set in server.js)
-router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/webhooks/stripe', async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
   let event;
