@@ -263,6 +263,7 @@ router.post('/webhooks/stripe', async (req, res) => {
         const subscriptionId   = session.subscription;
 
         logger.info(`checkout.session.completed for ${email}`);
+        logger.info('DB URL first 20: ' + (process.env.DATABASE_URL || 'NOT SET').substring(0, 20));
 
         if (!email) {
           logger.error('checkout.session.completed: no email found');
