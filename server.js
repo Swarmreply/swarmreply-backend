@@ -31,7 +31,8 @@ const helmet   = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { testConnection } = require('./database/db');
 const { startScheduler } = require('./scheduler');
-const routes   = require('./routes/index');
+const routes      = require('./routes/index');
+const adminRoutes = require('./routes/admin');
 const { sanitizeBody }        = require('./middleware/validate');
 const { verifyCsrf, generateCsrf } = require('./middleware/csrf');
 const cookieParser             = require('cookie-parser');
@@ -183,6 +184,7 @@ app.use((req, res, next) => {
 });
 
 app.use('/api', routes);
+app.use('/api/admin', adminRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
