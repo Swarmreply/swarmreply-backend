@@ -28,7 +28,8 @@
     "validator": "^13.11.0",
     "hpp": "^0.2.3",
     "express-mongo-sanitize": "^2.2.0",
-    "cookie-parser": "^1.4.6"
+    "cookie-parser": "^1.4.6",
+    "@sentry/node": "^8.0.0"
   },
   "devDependencies": {
     "jest": "^29.7.0",

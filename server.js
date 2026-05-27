@@ -8,6 +8,23 @@
 
 require('dotenv').config();
 
+// ============================================
+// SENTRY — Error monitoring (must be first)
+// ============================================
+const Sentry = require('@sentry/node');
+
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'development',
+    tracesSampleRate: 0.2,
+    integrations: [
+      Sentry.httpIntegration(),
+      Sentry.expressIntegration(),
+    ],
+  });
+}
+
 const express  = require('express');
 const cors     = require('cors');
 const helmet   = require('helmet');
@@ -23,6 +40,9 @@ const logger   = require('./utils/logger');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
+
+// Sentry request handler — must be first middleware
+if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
 const isProd = process.env.NODE_ENV === 'production';
 
 // ============================================
@@ -159,7 +179,9 @@ app.use('*', (req, res) => {
 
 // Global error handler
 app.use((err, req, res, next) => {
-  // Log full error internally but never expose stack traces to clients
+  // Report to Sentry first
+  if (process.env.SENTRY_DSN) Sentry.captureException(err);
+
   const reqId = req.headers['x-request-id'] || 'no-id';
   logger.error(`[${reqId}] Unhandled error: ${err.message}`, {
     stack:  err.stack,
@@ -167,17 +189,13 @@ app.use((err, req, res, next) => {
     method: req.method,
   });
 
-  // CORS errors
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'Forbidden' });
   }
-
-  // Stripe signature errors
   if (err.type === 'StripeSignatureVerificationError') {
     return res.status(400).json({ error: 'Invalid webhook signature' });
   }
 
-  // Never expose internal error details in production
   const message = isProd ? 'An unexpected error occurred' : err.message;
   res.status(err.status || 500).json({ error: message });
 });
