@@ -254,6 +254,85 @@ router.post('/webhooks/stripe', async (req, res) => {
   try {
     switch (event.type) {
 
+      // New checkout completed — create customer account + send welcome email
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        const email = session.customer_details?.email || session.customer_email;
+        const name  = session.customer_details?.name || '';
+        const stripeCustomerId = session.customer;
+        const subscriptionId   = session.subscription;
+
+        logger.info(`checkout.session.completed for ${email}`);
+
+        if (!email) {
+          logger.error('checkout.session.completed: no email found');
+          break;
+        }
+
+        try {
+          // Check if customer already exists
+          const existing = await query(
+            'SELECT id, welcome_email_sent FROM customers WHERE email = $1',
+            [email]
+          );
+
+          let customerId;
+
+          if (existing.rows.length === 0) {
+            // Create new customer
+            const bcrypt = require('bcryptjs');
+            const crypto = require('crypto');
+            const tempPassword = crypto.randomBytes(8).toString('hex');
+            const hashedPassword = await bcrypt.hash(tempPassword, 12);
+
+            const newCustomer = await query(
+              `INSERT INTO customers
+                (email, name, password_hash, stripe_customer_id, stripe_subscription_id, plan, status, welcome_email_sent)
+               VALUES ($1, $2, $3, $4, $5, 'starter', 'active', false)
+               RETURNING id`,
+              [email, name, hashedPassword, stripeCustomerId, subscriptionId]
+            );
+
+            customerId = newCustomer.rows[0].id;
+            logger.info(`New customer created: ${customerId}`);
+
+            // Send welcome email with credentials
+            const emailService = require('../services/emailService');
+            await emailService.sendWelcomeWithCredentials({
+              email,
+              name,
+              tempPassword,
+              loginUrl: process.env.FRONTEND_URL + '/login' || 'https://app.swarmreply.com/login',
+            });
+
+            await query(
+              'UPDATE customers SET welcome_email_sent = true WHERE id = $1',
+              [customerId]
+            );
+
+            logger.info(`Welcome email sent to ${email}`);
+
+          } else {
+            // Customer exists — update subscription
+            customerId = existing.rows[0].id;
+            await query(
+              `UPDATE customers SET stripe_customer_id = $1, stripe_subscription_id = $2,
+               status = 'active', updated_at = NOW() WHERE id = $3`,
+              [stripeCustomerId, subscriptionId, customerId]
+            );
+
+            if (!existing.rows[0].welcome_email_sent) {
+              const emailService = require('../services/emailService');
+              await emailService.sendWelcomeEmail({ email, name });
+              await query('UPDATE customers SET welcome_email_sent = true WHERE id = $1', [customerId]);
+            }
+          }
+        } catch (err) {
+          logger.error('checkout.session.completed handler error:', err.message);
+        }
+        break;
+      }
+
       // New subscription created
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
