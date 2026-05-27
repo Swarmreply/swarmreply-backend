@@ -234,11 +234,17 @@ router.get('/stats', authenticateToken, async (req, res) => {
 router.post('/webhooks/stripe', async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
+  // Debug logging
+  logger.info('Webhook received - body type: ' + typeof req.body + ' isBuffer: ' + Buffer.isBuffer(req.body));
+  logger.info('Webhook secret first 8 chars: ' + (process.env.STRIPE_WEBHOOK_SECRET || 'NOT SET').substring(0, 8));
+  logger.info('Sig header present: ' + !!sig);
+
   let event;
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (error) {
-    logger.error('Stripe webhook signature failed:', error.message);
+    logger.error('Stripe webhook signature failed: ' + error.message);
+    logger.error('Body is Buffer: ' + Buffer.isBuffer(req.body) + ' Body length: ' + (req.body ? req.body.length : 0));
     return res.status(400).json({ error: 'Invalid signature' });
   }
 
