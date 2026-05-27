@@ -236,12 +236,13 @@ router.post('/webhooks/stripe', async (req, res) => {
 
   // Debug logging
   logger.info('Webhook received - body type: ' + typeof req.body + ' isBuffer: ' + Buffer.isBuffer(req.body));
-  logger.info('Webhook secret first 8 chars: ' + (process.env.STRIPE_WEBHOOK_SECRET || 'NOT SET').substring(0, 8));
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_8QPrezwGaEy7PRLH7FgH7B3iDh0Gf8UE';
+  logger.info('Webhook secret first 8 chars: ' + webhookSecret.substring(0, 8));
   logger.info('Sig header present: ' + !!sig);
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (error) {
     logger.error('Stripe webhook signature failed: ' + error.message);
     logger.error('Body is Buffer: ' + Buffer.isBuffer(req.body) + ' Body length: ' + (req.body ? req.body.length : 0));
