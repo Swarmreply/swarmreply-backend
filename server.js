@@ -165,10 +165,18 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/api/auth/csrf', generateCsrf);
 
 // Global input sanitization — strip control chars from all string body values
-app.use(sanitizeBody);
+// Skip for Stripe webhook — raw body must not be modified
+app.use((req, res, next) => {
+  if (req.path === '/api/webhooks/stripe') return next();
+  sanitizeBody(req, res, next);
+});
 
 // CSRF verification on all state-changing requests
-app.use(verifyCsrf);
+// Skip for Stripe webhook
+app.use((req, res, next) => {
+  if (req.path === '/api/webhooks/stripe') return next();
+  verifyCsrf(req, res, next);
+});
 
 app.use('/api', routes);
 
