@@ -146,14 +146,13 @@ app.use('/api/team/invite', inviteLimiter);
 // BODY PARSERS
 // ============================================
 
-// Regular JSON parser for all routes
-// Note: Stripe webhook route uses raw parser (defined in routes)
+// Stripe webhook MUST get raw body — handle before JSON parser
+app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }));
+
+// All other routes get JSON
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe') {
-    next(); // Skip JSON parsing for Stripe webhook
-  } else {
-    express.json({ limit: '10mb' })(req, res, next);
-  }
+  if (req.path === '/api/webhooks/stripe') return next();
+  express.json({ limit: '10mb' })(req, res, next);
 });
 
 app.use(express.urlencoded({ extended: true }));
