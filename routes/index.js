@@ -231,12 +231,12 @@ router.get('/stats', authenticateToken, async (req, res) => {
 // POST /api/webhooks/stripe
 // Handle Stripe subscription events
 // IMPORTANT: Use raw body parser for this route (set in server.js)
-router.post('/webhooks/stripe', async (req, res) => {
+const stripeWebhookHandler = async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
   // Debug logging
   logger.info('Webhook received - body type: ' + typeof req.body + ' isBuffer: ' + Buffer.isBuffer(req.body));
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_8QPrezwGaEy7PRLH7FgH7B3iDh0Gf8UE';
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   logger.info('Webhook secret first 8 chars: ' + webhookSecret.substring(0, 8));
   logger.info('Sig header present: ' + !!sig);
 
@@ -325,7 +325,7 @@ router.post('/webhooks/stripe', async (req, res) => {
 
             if (!existing.rows[0].welcome_email_sent) {
               const emailService = require('../services/emailService');
-              await emailService.sendWelcomeEmail({ email, name });
+              await emailService.sendWelcomeEmail({ email, name }, 'your business');
               await query('UPDATE customers SET welcome_email_sent = true WHERE id = $1', [customerId]);
             }
           }
