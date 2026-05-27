@@ -41,6 +41,9 @@ const logger   = require('./utils/logger');
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust Railway's proxy
+app.set('trust proxy', 1);
+
 // Sentry request handler — must be first middleware
 if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
 const isProd = process.env.NODE_ENV === 'production';
