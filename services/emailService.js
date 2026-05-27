@@ -6,10 +6,10 @@
 const { Resend } = require('resend');
 const logger = require('../utils/logger');
 
-let resend;
+let _resend = null;
 function getResend() {
-  if (!resend) resend = new Resend(process.env.RESEND_API_KEY || 'placeholder');
-  return resend;
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY || 'placeholder');
+  return _resend;
 }
 
 /**
@@ -67,21 +67,85 @@ async function sendWeeklyDigest(customer) {
  * Sent when new customer connects their first location
  */
 async function sendWelcomeEmail(customer, locationName) {
+  const firstName = (customer.name || 'there').split(' ')[0];
   try {
     await getResend().emails.send({
-      from: process.env.EMAIL_FROM,
+      from: process.env.EMAIL_FROM || 'hello@swarmreply.com',
       to: customer.email,
-      subject: `Your swarm is live 🐝 — ${locationName}`,
+      subject: `Welcome to SwarmReply — your reputation dashboard is ready 🐝`,
       html: `
-        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;">
-          <h1 style="font-size: 24px; color: #0d0d0d;">You're all set, ${customer.name}!</h1>
-          <p style="color: #666;">SwarmReply is now monitoring <strong>${locationName}</strong> and will automatically reply to every new review within 1 business day.</p>
-          <p style="color: #666;">You don't need to do anything — we've got it from here.</p>
-          <a href="https://swarmreply.com/dashboard"
-             style="display: inline-block; background: #0d0d0d; color: white; padding: 14px 28px; border-radius: 50px; text-decoration: none; font-weight: 600; margin-top: 16px;">
-            View Dashboard
-          </a>
-        </div>
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+        <body style="margin:0;padding:0;background:#f8f7f4;font-family:'Helvetica Neue',Arial,sans-serif">
+          <div style="max-width:560px;margin:40px auto;padding:0 20px">
+
+            <!-- Logo -->
+            <div style="text-align:center;margin-bottom:32px">
+              <span style="font-size:26px;font-weight:900;color:#0a0a0a;letter-spacing:-.5px">🐝 SwarmReply</span>
+            </div>
+
+            <!-- Card -->
+            <div style="background:white;border-radius:20px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07)">
+
+              <!-- Header -->
+              <div style="background:#0a0a0a;padding:32px 36px">
+                <div style="font-size:22px;font-weight:900;color:white;margin-bottom:8px;line-height:1.2">
+                  Your swarm is ready, ${firstName}. 🎉
+                </div>
+                <div style="font-size:14px;color:rgba(255,255,255,.5);line-height:1.6">
+                  Your AI reputation dashboard is live and ready to explore
+                </div>
+              </div>
+
+              <!-- Body -->
+              <div style="padding:32px 36px">
+                <p style="font-size:15px;color:#3a3a38;line-height:1.75;margin:0 0 20px">
+                  Welcome aboard! You now have access to the complete SwarmReply platform —
+                  AI review replies, reputation analytics, LLM visibility monitoring, listings sync,
+                  webchat, SMS campaigns, and more.
+                </p>
+
+                <p style="font-size:15px;color:#3a3a38;line-height:1.75;margin:0 0 28px">
+                  Your first step: connect your Google Business Profile so SwarmReply can start
+                  monitoring your reviews and replying automatically. It takes about 30 seconds.
+                </p>
+
+                <!-- What's waiting -->
+                <div style="background:#f8f7f4;border-radius:12px;padding:20px 24px;margin-bottom:28px">
+                  <div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#7a7670;margin-bottom:14px">What's inside your dashboard</div>
+                  <div style="display:flex;flex-direction:column;gap:10px">
+                    <div style="font-size:14px;color:#3a3a38;line-height:1.5">⭐ <strong>AI Review Replies</strong> — every Google review replied to within 1 business day</div>
+                    <div style="font-size:14px;color:#3a3a38;line-height:1.5">🤖 <strong>LLM Visibility</strong> — track if you show up on ChatGPT &amp; Gemini</div>
+                    <div style="font-size:14px;color:#3a3a38;line-height:1.5">📊 <strong>Reputation Analytics</strong> — rating trends, sentiment, keyword mentions</div>
+                    <div style="font-size:14px;color:#3a3a38;line-height:1.5">💬 <strong>Webchat &amp; AI Inbox</strong> — capture leads while you sleep</div>
+                    <div style="font-size:14px;color:#3a3a38;line-height:1.5">📲 <strong>SMS Campaigns</strong> — reach your customers directly</div>
+                  </div>
+                </div>
+
+                <!-- CTA -->
+                <div style="text-align:center">
+                  <a href="https://app.swarmreply.com/dashboard"
+                     style="display:inline-block;background:#f5c842;color:#0a0a0a;padding:15px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:15px;letter-spacing:-.2px">
+                    Open your dashboard →
+                  </a>
+                  <div style="margin-top:12px;font-size:13px;color:#7a7670">
+                    Questions? Reply to this email anytime — we read every one.
+                  </div>
+                </div>
+              </div>
+
+              <!-- Footer -->
+              <div style="padding:20px 36px;border-top:1px solid #f0ede8;text-align:center">
+                <div style="font-size:12px;color:#b0ada8">
+                  SwarmReply · AI Reputation Management · <a href="https://swarmreply.com" style="color:#b0ada8">swarmreply.com</a>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </body>
+        </html>
       `
     });
   } catch (error) {
@@ -132,7 +196,7 @@ async function sendWelcomeWithCredentials({ email, name, plan, tempPassword, res
     await getResend().emails.send({
       from:    process.env.EMAIL_FROM || 'hello@swarmreply.com',
       to:      email,
-      subject: `Welcome to SwarmReply — your login details`,
+      subject: `You're in — your SwarmReply login details 🐝`,
       html: `
         <!DOCTYPE html>
         <html>
@@ -153,10 +217,10 @@ async function sendWelcomeWithCredentials({ email, name, plan, tempPassword, res
               <!-- Header -->
               <div style="background:#0a0a0a;padding:32px 36px">
                 <div style="font-size:22px;font-weight:900;color:white;margin-bottom:8px;line-height:1.2">
-                  Your swarm is ready, ${name || 'there'}!
+                  Welcome to SwarmReply, ${name ? name.split(' ')[0] : 'there'}! 🎉
                 </div>
                 <div style="font-size:14px;color:rgba(255,255,255,.55);line-height:1.6">
-                  ${planLabel} plan · ${price}/mo · No contracts
+                  Your AI reputation dashboard is live and ready to explore
                 </div>
               </div>
 
