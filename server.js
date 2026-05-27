@@ -151,10 +151,11 @@ app.use('/api/team/invite', inviteLimiter);
 
 // Stripe webhook MUST get raw body — handle before JSON parser
 app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }));
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 
 // All other routes get JSON
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe') return next();
+  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook') return next();
   express.json({ limit: '10mb' })(req, res, next);
 });
 
@@ -169,14 +170,14 @@ app.get('/api/auth/csrf', generateCsrf);
 // Global input sanitization — strip control chars from all string body values
 // Skip for Stripe webhook — raw body must not be modified
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe') return next();
+  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook') return next();
   sanitizeBody(req, res, next);
 });
 
 // CSRF verification on all state-changing requests
 // Skip for Stripe webhook
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe') return next();
+  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook') return next();
   verifyCsrf(req, res, next);
 });
 
