@@ -192,6 +192,12 @@ app.use((req, res, next) => {
 app.use('/api', routes);
 app.use('/api/admin', adminRoutes);
 
+// ── PATH ALIASES ─────────────────────────────────────────────────────────────
+// Allow calls without /api prefix by re-dispatching through the api router
+app.post('/customers/login',  (req, res) => { req.url = '/customers/login';  routes(req, res, (err) => { if(err) res.status(500).json({error:err.message}); }); });
+app.post('/customers/logout', (req, res) => { req.url = '/customers/logout'; routes(req, res, (err) => { if(err) res.status(500).json({error:err.message}); }); });
+app.post('/admin/login',      (req, res) => { req.url = '/login';            adminRoutes(req, res, (err) => { if(err) res.status(500).json({error:err.message}); }); });
+
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Route not found' });
