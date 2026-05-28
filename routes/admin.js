@@ -304,3 +304,109 @@ router.post('/customers', requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
+
+// ── DELETE CUSTOMER ───────────────────────────
+// DELETE /api/admin/customers/:id
+router.delete('/customers/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get customer info for audit log before deleting
+    const cust = await query('SELECT name, email, is_demo FROM customers WHERE id = $1', [id]);
+    if (!cust.rows.length) return res.status(404).json({ error: 'Customer not found' });
+    const { name, email, is_demo } = cust.rows[0];
+
+    // Delete in dependency order
+    await query('DELETE FROM replies WHERE review_id IN (SELECT id FROM reviews WHERE location_id IN (SELECT id FROM locations WHERE customer_id=$1))', [id]).catch(()=>{});
+    await query('DELETE FROM reviews WHERE location_id IN (SELECT id FROM locations WHERE customer_id=$1)', [id]).catch(()=>{});
+    await query('DELETE FROM locations WHERE customer_id=$1', [id]).catch(()=>{});
+    await query('DELETE FROM integrations WHERE customer_id=$1', [id]).catch(()=>{});
+    await query('DELETE FROM team_members WHERE customer_id=$1', [id]).catch(()=>{});
+    await query('DELETE FROM audit_log WHERE customer_id=$1', [id]).catch(()=>{});
+    await query('DELETE FROM customers WHERE id=$1', [id]);
+
+    logger.info(`Admin deleted customer: ${email} (demo: ${is_demo})`);
+    res.json({ success: true, deleted: { name, email } });
+  } catch (err) {
+    logger.error('Delete customer error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── IMPERSONATE CUSTOMER ──────────────────────
+// POST /api/admin/customers/:id/impersonate
+// Returns a short-lived JWT the admin can use to log in as that customer
+router.post('/customers/:id/impersonate', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const cust = await query(
+      'SELECT id, email, name, plan, status, is_demo FROM customers WHERE id=$1',
+      [id]
+    );
+    if (!cust.rows.length) return res.status(404).json({ error: 'Customer not found' });
+    const c = cust.rows[0];
+
+    // Generate a 2-hour impersonation token (same shape as normal customer JWT)
+    const impToken = jwt.sign(
+      { id: c.id, email: c.email, name: c.name, plan: c.plan, role: 'customer', impersonated_by: req.admin.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '2h' }
+    );
+
+    // Audit log
+    await query(
+      'INSERT INTO audit_log (customer_id, event_type, metadata) VALUES ($1,$2,$3)',
+      [id, 'admin_impersonate', JSON.stringify({ admin: req.admin.email, demo: c.is_demo })]
+    ).catch(()=>{});
+
+    logger.info(`Admin impersonated: ${c.email} by ${req.admin.email}`);
+    res.json({ token: impToken, customer: { id: c.id, email: c.email, name: c.name, plan: c.plan, is_demo: c.is_demo } });
+  } catch (err) {
+    logger.error('Impersonate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── CREATE DEMO ACCOUNT ───────────────────────
+// POST /api/admin/demo
+router.post('/demo', requireAdmin, async (req, res) => {
+  try {
+    const { name, industry, location_count } = req.body;
+    const crypto = require('crypto');
+    const bcrypt = require('bcryptjs');
+
+    const email    = `demo_${Date.now()}@demo.swarmreply.internal`;
+    const tempPass = crypto.randomBytes(8).toString('hex');
+    const hash     = await bcrypt.hash(tempPass, 12);
+
+    const result = await query(
+      `INSERT INTO customers
+        (email, name, password_hash, plan, status, account_type, is_demo, notes, welcome_email_sent)
+       VALUES ($1,$2,$3,'starter','active','direct',true,$4,false) RETURNING id`,
+      [email, name || 'Demo Account', hash, `Demo — ${industry || 'General'} · ${location_count||1} location(s)`]
+    );
+
+    const custId = result.rows[0].id;
+
+    // Create placeholder location(s)
+    const locs = parseInt(location_count) || 1;
+    for (let i = 0; i < locs; i++) {
+      await query(
+        `INSERT INTO locations (customer_id, name, platform, is_active) VALUES ($1,$2,'google',true)`,
+        [custId, `${name} ${locs > 1 ? `Location ${i+1}` : ''}`]
+      ).catch(()=>{});
+    }
+
+    await query(
+      'INSERT INTO audit_log (customer_id, event_type, metadata) VALUES ($1,$2,$3)',
+      [custId, 'admin_created_demo', JSON.stringify({ admin: req.admin.email, industry })]
+    ).catch(()=>{});
+
+    logger.info(`Admin created demo: ${name}`);
+    res.json({ success: true, id: custId, email, tempPassword: tempPass });
+  } catch (err) {
+    logger.error('Create demo error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
