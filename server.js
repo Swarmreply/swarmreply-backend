@@ -179,7 +179,13 @@ app.use((req, res, next) => {
 // CSRF verification on all state-changing requests
 // Skip for Stripe webhook
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook') return next();
+  // Skip CSRF for Stripe webhooks and auth endpoints (they use JWT instead)
+  const skipCsrf = [
+    '/api/webhooks/stripe', '/api/stripe/webhook',
+    '/api/customers/login', '/api/customers/logout',
+    '/api/admin/login',
+  ];
+  if (skipCsrf.includes(req.path)) return next();
   verifyCsrf(req, res, next);
 });
 
