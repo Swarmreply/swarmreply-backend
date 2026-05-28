@@ -433,4 +433,129 @@ router.use('/rank', rankRoutes);
 const repWidgetRoutes = require('./reputationWidget');
 router.use('/rep-widget', repWidgetRoutes);
 
+// ============================================
+// CUSTOMER AUTH ROUTES
+// ============================================
+
+// POST /api/customers/login
+// Team member login — email + password → JWT
+router.post('/customers/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  const normalizedEmail = email.toLowerCase().trim();
+  const ip = req.ip || req.headers['x-forwarded-for']?.split(',')[0] || 'unknown';
+  try {
+    const bcrypt = require('bcryptjs');
+    const jwt    = require('jsonwebtoken');
+    const { v4: uuidv4 } = require('uuid');
+
+    // Brute force check
+    const recentFails = await query(
+      `SELECT COUNT(*) FROM login_attempts
+       WHERE email=$1 AND succeeded=false AND attempted_at > NOW()-INTERVAL '15 minutes'`,
+      [normalizedEmail]
+    ).catch(() => ({ rows: [{ count: 0 }] }));
+    if (parseInt(recentFails.rows[0].count) >= 10) {
+      return res.status(429).json({ error: 'Too many attempts. Wait 15 minutes.' });
+    }
+
+    // Try team_members first (normal login)
+    const memberResult = await query(
+      `SELECT tm.id, tm.name, tm.email, tm.role, tm.password_hash,
+              tm.status, tm.customer_id, c.plan, c.status as customer_status, c.is_demo
+       FROM team_members tm
+       JOIN customers c ON c.id = tm.customer_id
+       WHERE LOWER(tm.email) = $1`,
+      [normalizedEmail]
+    );
+
+    // If no team member, try direct customer login (demo accounts use customers table)
+    let member = memberResult.rows[0];
+    let isDirect = false;
+    if (!member) {
+      const custResult = await query(
+        `SELECT id, name, email, plan, status, password_hash, is_demo
+         FROM customers WHERE LOWER(email) = $1`,
+        [normalizedEmail]
+      );
+      if (custResult.rows[0]) {
+        const c = custResult.rows[0];
+        member = {
+          id: c.id, name: c.name, email: c.email,
+          role: 'owner', password_hash: c.password_hash,
+          status: 'active', customer_id: c.id,
+          plan: c.plan, customer_status: c.status, is_demo: c.is_demo
+        };
+        isDirect = true;
+      }
+    }
+
+    const dummyHash = '$2a$12$dummy.hash.to.prevent.timing.attacks.xxxxxxxxxx';
+    const hashToCheck = member?.password_hash || dummyHash;
+    const passwordValid = await bcrypt.compare(password, hashToCheck);
+
+    await query(
+      `INSERT INTO login_attempts (email, ip_address, succeeded) VALUES ($1,$2,$3)`,
+      [normalizedEmail, ip, !!(member && passwordValid)]
+    ).catch(() => {});
+
+    if (!member || !passwordValid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    if (member.status === 'suspended') {
+      return res.status(403).json({ error: 'Account suspended. Contact support.' });
+    }
+    if (member.customer_status === 'cancelled') {
+      return res.status(403).json({ error: 'This account is no longer active.' });
+    }
+
+    // Update last login
+    if (isDirect) {
+      await query('UPDATE customers SET updated_at=NOW() WHERE id=$1', [member.id]).catch(()=>{});
+    } else {
+      await query('UPDATE team_members SET last_login_at=NOW() WHERE id=$1', [member.id]).catch(()=>{});
+    }
+
+    const accessToken = jwt.sign(
+      { jti: uuidv4(), memberId: member.id, customerId: member.customer_id,
+        email: member.email, name: member.name, role: member.role,
+        plan: member.plan, is_demo: member.is_demo || false },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    logger.info(`Login: ${normalizedEmail} (${member.role}${member.is_demo ? ' demo' : ''})`);
+    res.json({
+      success: true, accessToken,
+      member: { id: member.id, name: member.name, email: member.email,
+                role: member.role, customerId: member.customer_id,
+                plan: member.plan, is_demo: member.is_demo || false }
+    });
+  } catch (err) {
+    logger.error('Login error:', err.message);
+    res.status(500).json({ error: 'Login failed. Please try again.' });
+  }
+});
+
+// POST /api/customers/logout
+router.post('/customers/logout', async (req, res) => {
+  const token = req.headers['authorization']?.split(' ')[1];
+  if (token) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.decode(token);
+      if (decoded?.jti) {
+        await query(
+          `INSERT INTO revoked_tokens (jti, reason, expires_at)
+           VALUES ($1,'logout',TO_TIMESTAMP($2)) ON CONFLICT (jti) DO NOTHING`,
+          [decoded.jti, decoded.exp]
+        ).catch(()=>{});
+      }
+    } catch(e) {}
+  }
+  res.json({ success: true });
+});
+
 module.exports = router;
