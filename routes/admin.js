@@ -58,8 +58,10 @@ router.get('/customers', requireAdmin, async (req, res) => {
     const customers = await query(`
       SELECT
         c.id, c.email, c.name, c.plan, c.status,
-        c.stripe_customer_id, c.stripe_subscription_id,
-        c.welcome_email_sent, c.created_at, c.updated_at,
+        c.stripe_customer_id,
+        COALESCE(c.stripe_subscription_id, '') as stripe_subscription_id,
+        COALESCE(c.welcome_email_sent, false) as welcome_email_sent,
+        c.created_at, c.updated_at,
         COALESCE(c.notes, '') as notes,
         COALESCE(c.flagged, false) as flagged,
         COALESCE(c.account_type, 'direct') as type,
@@ -75,7 +77,7 @@ router.get('/customers', requireAdmin, async (req, res) => {
 
     // Get integration data
     const integrations = await query(`
-      SELECT customer_id, provider FROM integrations WHERE status = 'active'
+      SELECT l.customer_id, i.provider FROM integrations i JOIN locations l ON l.id = i.location_id WHERE i.status = 'connected'
     `).catch(() => ({ rows: [] }));
 
     // Get team member counts
@@ -147,9 +149,9 @@ router.get('/customers', requireAdmin, async (req, res) => {
     const auditLog = await query(`
       SELECT
         to_char(al.created_at, 'Mon DD HH24:MI') as time,
-        al.event_type as action,
+        al.action as action,
         c.name as customer,
-        al.metadata as detail,
+        al.details as detail,
         al.created_at
       FROM audit_log al
       LEFT JOIN customers c ON c.id = al.customer_id
@@ -232,7 +234,7 @@ router.patch('/customers/:id/status', requireAdmin, async (req, res) => {
 
     // Log action
     await query(
-      'INSERT INTO audit_log (customer_id, event_type, metadata) VALUES ($1, $2, $3)',
+      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1, $2, $3)',
       [id, 'admin_status_change', JSON.stringify({ status, admin: req.admin.email })]
     ).catch(() => {});
 
@@ -287,13 +289,13 @@ router.post('/customers', requireAdmin, async (req, res) => {
 
     const result = await query(
       `INSERT INTO customers
-        (email, name, password_hash, plan, status, account_type, is_demo, welcome_email_sent)
-       VALUES ($1,$2,$3,$4,'active',$5,$6,false) RETURNING id`,
-      [email, name, hash, plan||'starter', type||'direct', is_demo||false]
+        (email, name, password_hash, plan, status)
+       VALUES ($1,$2,$3,$4,'active') RETURNING id`,
+      [email, name, hash, plan||'starter']
     );
 
     await query(
-      'INSERT INTO audit_log (customer_id, event_type, metadata) VALUES ($1,$2,$3)',
+      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1,$2,$3)',
       [result.rows[0].id, 'admin_created', JSON.stringify({ admin: req.admin.email })]
     ).catch(() => {});
 
@@ -356,7 +358,7 @@ router.post('/customers/:id/impersonate', requireAdmin, async (req, res) => {
 
     // Audit log
     await query(
-      'INSERT INTO audit_log (customer_id, event_type, metadata) VALUES ($1,$2,$3)',
+      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1,$2,$3)',
       [id, 'admin_impersonate', JSON.stringify({ admin: req.admin.email, demo: c.is_demo })]
     ).catch(()=>{});
 
@@ -382,9 +384,9 @@ router.post('/demo', requireAdmin, async (req, res) => {
 
     const result = await query(
       `INSERT INTO customers
-        (email, name, password_hash, plan, status, account_type, is_demo, notes, welcome_email_sent)
-       VALUES ($1,$2,$3,'starter','active','direct',true,$4,false) RETURNING id`,
-      [email, name || 'Demo Account', hash, `Demo — ${industry || 'General'} · ${location_count||1} location(s)`]
+        (email, name, password_hash, plan, status)
+       VALUES ($1,$2,$3,'starter','active') RETURNING id`,
+      [email, name || ' (Demo)', hash]
     );
 
     const custId = result.rows[0].id;
@@ -393,13 +395,13 @@ router.post('/demo', requireAdmin, async (req, res) => {
     const locs = parseInt(location_count) || 1;
     for (let i = 0; i < locs; i++) {
       await query(
-        `INSERT INTO locations (customer_id, name, platform, is_active) VALUES ($1,$2,'google',true)`,
+        `INSERT INTO locations (customer_id, business_name, platform, platform_location_id, is_active) VALUES ($1,$2,'google','demo_' || gen_random_uuid()::text,true)`,
         [custId, `${name} ${locs > 1 ? `Location ${i+1}` : ''}`]
       ).catch(()=>{});
     }
 
     await query(
-      'INSERT INTO audit_log (customer_id, event_type, metadata) VALUES ($1,$2,$3)',
+      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1,$2,$3)',
       [custId, 'admin_created_demo', JSON.stringify({ admin: req.admin.email, industry })]
     ).catch(()=>{});
 
