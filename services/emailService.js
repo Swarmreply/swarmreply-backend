@@ -82,20 +82,7 @@ async function sendWelcomeEmail(customer, locationName) {
 
             <!-- Logo -->
             <div style="text-align:center;margin-bottom:32px">
-              <span style="font-size:26px;font-weight:900;color:#0a0a0a;letter-spacing:-.5px;display:inline-flex;align-items:center;gap:10px"><svg width="48" height="48" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle">
-  <ellipse cx="50" cy="62" rx="20" ry="24" fill="#0a0a0a"/>
-  <rect x="30" y="54" width="40" height="7" rx="2" fill="#f5c842"/>
-  <rect x="30" y="65" width="40" height="6" rx="2" fill="#f5c842"/>
-  <circle cx="50" cy="34" r="14" fill="#0a0a0a"/>
-  <circle cx="44" cy="32" r="4" fill="#fff"/><circle cx="56" cy="32" r="4" fill="#fff"/>
-  <circle cx="45" cy="33" r="2" fill="#0a0a0a"/><circle cx="57" cy="33" r="2" fill="#0a0a0a"/>
-  <path d="M44 40 Q50 45 56 40" stroke="#fff" stroke-width="1.8" stroke-linecap="round" fill="none"/>
-  <ellipse cx="22" cy="46" rx="16" ry="8" fill="rgba(245,200,66,.5)" stroke="#0a0a0a" stroke-width="1.2" transform="rotate(-28 22 46)"/>
-  <ellipse cx="78" cy="46" rx="16" ry="8" fill="rgba(245,200,66,.5)" stroke="#0a0a0a" stroke-width="1.2" transform="rotate(28 78 46)"/>
-  <ellipse cx="50" cy="21" rx="18" ry="4" fill="#f5c842" stroke="#0a0a0a" stroke-width="1"/>
-  <path d="M34 21 Q36 9 50 9 Q64 9 66 21 Z" fill="#f5c842" stroke="#0a0a0a" stroke-width="1"/>
-  <polygon points="50,86 46,94 54,94" fill="#0a0a0a"/>
-</svg> SwarmReply</span>
+              <span style="font-size:26px;font-weight:900;color:#0a0a0a;letter-spacing:-.5px;display:inline-flex;align-items:center;gap:10px"><img src="https://swarmreply.com/files/Images/Bee_Logo.png" alt="SwarmReply" style="width:44px;height:44px;object-fit:contain;display:inline-block;vertical-align:middle"> SwarmReply</span>
             </div>
 
             <!-- Card -->
