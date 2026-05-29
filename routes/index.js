@@ -609,7 +609,7 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
     const businessName = custResult.rows[0]?.name || 'Your Business';
 
     const isPhone  = /^[+\d\s\-()]{7,}$/.test(destination) && !destination.includes('@');
-    const testLink = 'https://app.swarmreply.com/review/preview';
+    const testLink = 'https://app.swarmreply.com/dashboard';
 
     function fillVars(text) {
       return (text || '')
