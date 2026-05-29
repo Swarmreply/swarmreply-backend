@@ -3,7 +3,8 @@
 // All API routes for SwarmReply backend
 // ============================================
 
-const express = require('express');
+const express    = require('express');
+const nodemailer = require('nodemailer');
 const router = express.Router();
 const { query } = require('../database/db');
 const googleService = require('../services/googleService');
@@ -639,8 +640,6 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
 
     } else {
       // Email via nodemailer (SMTP)
-      const nodemailer = require('nodemailer');
-
       const transporter = nodemailer.createTransporter({
         host:   process.env.SMTP_HOST   || 'smtp.sendgrid.net',
         port:   parseInt(process.env.SMTP_PORT || '587'),
