@@ -558,4 +558,41 @@ router.post('/customers/logout', async (req, res) => {
   res.json({ success: true });
 });
 
+// ── ONBOARDING STATUS ────────────────────────────────────────────────────────
+// GET /api/onboarding/status
+// Returns whether the customer has completed onboarding
+// (has at least one connected location)
+router.get('/onboarding/status', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+
+    const result = await query(
+      `SELECT
+         COUNT(id) as total_locations,
+         COUNT(CASE WHEN is_active = true THEN 1 END) as active_locations,
+         COUNT(CASE WHEN platform IS NOT NULL AND platform != '' THEN 1 END) as connected_locations
+       FROM locations
+       WHERE customer_id = $1`,
+      [customerId]
+    );
+
+    const row = result.rows[0];
+    const hasLocation    = parseInt(row.total_locations) > 0;
+    const hasConnected   = parseInt(row.connected_locations) > 0;
+
+    res.json({
+      onboarding: {
+        completed:        hasConnected,
+        hasLocation:      hasLocation,
+        hasConnected:     hasConnected,
+        totalLocations:   parseInt(row.total_locations),
+        activeLocations:  parseInt(row.active_locations),
+      }
+    });
+  } catch (err) {
+    logger.error('Onboarding status error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
