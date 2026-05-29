@@ -234,7 +234,7 @@ router.patch('/customers/:id/status', requireAdmin, async (req, res) => {
 
     // Log action
     await query(
-      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1, $2, $3)',
+      'INSERT INTO audit_log (customer_id, action, details) VALUES ($1, $2, $3)',
       [id, 'admin_status_change', JSON.stringify({ status, admin: req.admin.email })]
     ).catch(() => {});
 
@@ -295,7 +295,7 @@ router.post('/customers', requireAdmin, async (req, res) => {
     );
 
     await query(
-      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1,$2,$3)',
+      'INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
       [result.rows[0].id, 'admin_created', JSON.stringify({ admin: req.admin.email })]
     ).catch(() => {});
 
@@ -358,7 +358,7 @@ router.post('/customers/:id/impersonate', requireAdmin, async (req, res) => {
 
     // Audit log
     await query(
-      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1,$2,$3)',
+      'INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
       [id, 'admin_impersonate', JSON.stringify({ admin: req.admin.email, demo: c.is_demo })]
     ).catch(()=>{});
 
@@ -401,7 +401,7 @@ router.post('/demo', requireAdmin, async (req, res) => {
     }
 
     await query(
-      'INSERT INTO audit_log (customer_id, action, metadata) VALUES ($1,$2,$3)',
+      'INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
       [custId, 'admin_created_demo', JSON.stringify({ admin: req.admin.email, industry })]
     ).catch(()=>{});
 
