@@ -648,15 +648,22 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
       const body = fillVars(template.emailBody);
       const htmlBody = body.replace(/\n/g, '<br>');
 
-      const { error: sendError } = await resend.emails.send({
+      const { data: sendData, error: sendError } = await resend.emails.send({
         from:    process.env.SMTP_FROM || 'SwarmReply <hello@swarmreply.com>',
-        to:      destination,
+        to:      [destination],
         subject: '[TEST] ' + fillVars(template.emailSubject),
         text:    body,
         html:    '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#1a1a18">' + htmlBody + '</div>',
       });
 
-      if (sendError) throw new Error(sendError.message);
+      if (sendError) {
+        logger.error('Resend error:', JSON.stringify(sendError));
+        throw new Error(sendError.message || JSON.stringify(sendError));
+      }
+      if (!sendData?.id) {
+        throw new Error('Email was not accepted by Resend. Make sure swarmreply.com is verified at resend.com/domains');
+      }
+      logger.info('Resend accepted email id: ' + sendData.id);
 
       logger.info('Test email sent to ' + destination);
       res.json({ success: true, channel: 'email', destination });
