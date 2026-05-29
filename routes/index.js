@@ -3,8 +3,8 @@
 // All API routes for SwarmReply backend
 // ============================================
 
-const express    = require('express');
-const nodemailer = require('nodemailer');
+const express = require('express');
+const { Resend } = require('resend');
 const router = express.Router();
 const { query } = require('../database/db');
 const googleService = require('../services/googleService');
@@ -639,31 +639,24 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
       res.json({ success: true, channel: 'sms', destination });
 
     } else {
-      // Email via nodemailer (SMTP)
-      const transporter = nodemailer.createTransporter({
-        host:   process.env.SMTP_HOST   || 'smtp.sendgrid.net',
-        port:   parseInt(process.env.SMTP_PORT || '587'),
-        secure: false,
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        },
-      });
-
-      if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-        return res.status(503).json({ error: 'Email not configured. Add SMTP_HOST, SMTP_USER, SMTP_PASS to Railway env vars.' });
+      // Email via Resend
+      if (!process.env.RESEND_TRANSACTIONAL_KEY && !process.env.RESEND_API_KEY) {
+        return res.status(503).json({ error: 'Email not configured. Add RESEND_TRANSACTIONAL_KEY to Railway env vars.' });
       }
 
+      const resend = new Resend(process.env.RESEND_TRANSACTIONAL_KEY || process.env.RESEND_API_KEY);
       const body = fillVars(template.emailBody);
       const htmlBody = body.replace(/\n/g, '<br>');
 
-      await transporter.sendMail({
-        from:    process.env.SMTP_FROM || (`"${businessName}" <hello@swarmreply.com>`),
+      const { error: sendError } = await resend.emails.send({
+        from:    process.env.SMTP_FROM || 'SwarmReply <hello@swarmreply.com>',
         to:      destination,
-        subject: `[TEST] ${fillVars(template.emailSubject)}`,
+        subject: '[TEST] ' + fillVars(template.emailSubject),
         text:    body,
-        html:    `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#1a1a18">${htmlBody}<br><br><hr style="border:none;border-top:1px solid #e4e0d8;margin:24px 0"><p style="font-size:.75rem;color:#7a7670">SwarmReply test. Promoter: ${thresholds && thresholds.promoterMin || 9}+, Neutral: ${thresholds && thresholds.neutralMin || 7}+. Platforms: ${(platforms || []).join(", ") || "none"}.</p></div>`,
+        html:    '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#1a1a18">' + htmlBody + '</div>',
       });
+
+      if (sendError) throw new Error(sendError.message);
 
       logger.info('Test email sent to ' + destination);
       res.json({ success: true, channel: 'email', destination });
