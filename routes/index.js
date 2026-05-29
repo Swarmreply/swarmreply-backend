@@ -648,12 +648,48 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
       const body = fillVars(template.emailBody);
       const htmlBody = body.replace(/\n/g, '<br>');
 
+      const brandColor = template.brandColor || '#f5c842';
+      const brandLogo  = template.brandLogo  || 'https://app.swarmreply.com/bee-logo.png';
+      const buttonText = template.buttonText || 'Share Your Feedback →';
+      const buttonLink = testLink;
+
+      const emailHtml = [
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>',
+        '<body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif">',
+        '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px">',
+        '<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">',
+
+        // Banner
+        '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0">',
+        brandLogo
+          ? '<img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain">'
+          : '<span style="font-weight:800;font-size:1.15rem;color:#0a0a0a">' + businessName + '</span>',
+        '</td></tr>',
+
+        // Body
+        '<tr><td style="background:#ffffff;padding:36px 32px">',
+        '<h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">' + fillVars(template.emailSubject) + '</h2>',
+        '<div style="font-size:.9rem;line-height:1.75;color:#3a3a38;white-space:pre-wrap;margin-bottom:28px">' + fillVars(body).split(testLink)[0] + '</div>',
+        '<div style="text-align:center;margin-bottom:28px">',
+        '<a href="' + buttonLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">' + buttonText + '</a>',
+        '</div>',
+        '<div style="font-size:.78rem;color:#7a7670;text-align:center">Or copy this link: <a href="' + buttonLink + '" style="color:#7a7670">' + buttonLink + '</a></div>',
+        '</td></tr>',
+
+        // Footer
+        '<tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center">',
+        '<span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by SwarmReply on behalf of ' + businessName + ' · <a href="#" style="color:#0a0a0a;opacity:.65">Unsubscribe</a></span>',
+        '</td></tr>',
+
+        '</table></td></tr></table></body></html>'
+      ].join('');
+
       const { data: sendData, error: sendError } = await resend.emails.send({
         from:    process.env.SMTP_FROM || 'SwarmReply <hello@swarmreply.com>',
         to:      [destination],
         subject: '[TEST] ' + fillVars(template.emailSubject),
         text:    body,
-        html:    '<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#1a1a18">' + htmlBody + '</div>',
+        html:    emailHtml,
       });
 
       if (sendError) {
