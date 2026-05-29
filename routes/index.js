@@ -596,3 +596,107 @@ router.get('/onboarding/status', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LLM / AI VISIBILITY ROUTES
+// ══════════════════════════════════════════════════════════════════════════════
+
+// GET /api/llm/queries — load auto + custom queries for the customer
+router.get('/llm/queries', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+
+    const result = await query(
+      `SELECT custom_queries, auto_queries, scan_frequency
+       FROM llm_settings
+       WHERE customer_id = $1`,
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+
+    const row = result.rows[0];
+    res.json({
+      customQueries: row?.custom_queries || [],
+      autoQueries:   row?.auto_queries   || [],
+      scanFrequency: row?.scan_frequency || 'weekly',
+    });
+  } catch (err) {
+    logger.error('LLM queries GET error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/llm/queries — save custom queries
+router.put('/llm/queries', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { customQueries = [] } = req.body;
+
+    if (!Array.isArray(customQueries)) {
+      return res.status(400).json({ error: 'customQueries must be an array' });
+    }
+    if (customQueries.length > 32) {
+      return res.status(400).json({ error: 'Maximum 32 custom queries allowed' });
+    }
+
+    await query(
+      `INSERT INTO llm_settings (customer_id, custom_queries, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (customer_id)
+       DO UPDATE SET custom_queries = $2, updated_at = NOW()`,
+      [customerId, JSON.stringify(customQueries)]
+    );
+
+    res.json({ success: true, saved: customQueries.length });
+  } catch (err) {
+    logger.error('LLM queries PUT error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/llm/report — get latest AI visibility scan report
+router.get('/llm/report', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+
+    const result = await query(
+      `SELECT report_data, next_scan_at, last_scan_at
+       FROM llm_reports
+       WHERE customer_id = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+
+    const row = result.rows[0];
+    res.json({
+      report:     row?.report_data   || null,
+      nextScanAt: row?.next_scan_at  || null,
+      lastScanAt: row?.last_scan_at  || null,
+    });
+  } catch (err) {
+    logger.error('LLM report GET error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/llm/scan — trigger a manual scan
+router.post('/llm/scan', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+
+    // Queue a scan job (insert into a jobs table or just update next_scan_at to now)
+    await query(
+      `INSERT INTO llm_reports (customer_id, next_scan_at, last_scan_at)
+       VALUES ($1, NOW(), NOW())
+       ON CONFLICT (customer_id)
+       DO UPDATE SET next_scan_at = NOW()`,
+      [customerId]
+    ).catch(e => logger.warn('LLM scan queue error:', e.message));
+
+    logger.info(`LLM scan triggered for customer ${customerId}`);
+    res.json({ success: true, message: 'Scan queued' });
+  } catch (err) {
+    logger.error('LLM scan POST error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
