@@ -659,11 +659,11 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
       const htmlBody = body.replace(/\n/g, '<br>');
 
       await transporter.sendMail({
-        from:    process.env.SMTP_FROM || \`"\${businessName}" <hello@swarmreply.com>\`,
+        from:    process.env.SMTP_FROM || (`"${businessName}" <hello@swarmreply.com>`),
         to:      destination,
-        subject: \`[TEST] \${fillVars(template.emailSubject)}\`,
+        subject: `[TEST] ${fillVars(template.emailSubject)}`,
         text:    body,
-        html:    \`<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#1a1a18">\${htmlBody}<br><br><hr style="border:none;border-top:1px solid #e4e0d8;margin:24px 0"><p style="font-size:.75rem;color:#7a7670">This is a test email from SwarmReply. Your NPS threshold: Promoter ≥\${thresholds?.promoterMin || 9}, Neutral ≥\${thresholds?.neutralMin || 7}. Platforms: \${(platforms || []).join(', ') || 'none set'}.</p></div>\`,
+        html:    `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#1a1a18">${htmlBody}<br><br><hr style="border:none;border-top:1px solid #e4e0d8;margin:24px 0"><p style="font-size:.75rem;color:#7a7670">SwarmReply test. Promoter: ${thresholds && thresholds.promoterMin || 9}+, Neutral: ${thresholds && thresholds.neutralMin || 7}+. Platforms: ${(platforms || []).join(", ") || "none"}.</p></div>`,
       });
 
       logger.info('Test email sent to ' + destination);
