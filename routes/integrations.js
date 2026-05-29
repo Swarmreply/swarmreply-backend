@@ -877,7 +877,7 @@ module.exports = { router, handleStripePaymentForReview };
 const JOBBER_AUTH_URL     = 'https://api.getjobber.com/api/oauth/authorize';
 const JOBBER_TOKEN_URL    = 'https://api.getjobber.com/api/oauth/token';
 const JOBBER_API_URL      = 'https://api.getjobber.com/api/graphql';
-const JOBBER_WEBHOOK_EVENTS = ['JOB_COMPLETED'];
+const JOBBER_WEBHOOK_EVENTS = ['JOB_COMPLETED', 'APP_DISCONNECT'];
 
 // GET /api/integrations/jobber/connect
 // Redirect user to Jobber OAuth consent screen
@@ -937,6 +937,11 @@ router.get('/jobber/callback', async (req, res) => {
     // Register webhook for JOB_COMPLETED
     const webhookUrl = `${process.env.APP_URL}/api/integrations/jobber/webhook`;
     for (const event of JOBBER_WEBHOOK_EVENTS) {
+      // APP_DISCONNECT gets its own dedicated endpoint
+      const eventUrl = event === 'APP_DISCONNECT'
+        ? `${process.env.APP_URL}/api/integrations/jobber/disconnect`
+        : webhookUrl;
+
       await fetch(JOBBER_API_URL, {
         method: 'POST',
         headers: {
@@ -953,7 +958,7 @@ router.get('/jobber/callback', async (req, res) => {
           `,
           variables: {
             input: {
-              url:        webhookUrl,
+              url:        eventUrl,
               httpMethod: 'POST',
               event:      event,
             },
@@ -1096,3 +1101,95 @@ router.post('/jobber/refresh', authenticateToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── JOBBER APP DISCONNECT ─────────────────────────────────────────────────────
+// POST /api/integrations/jobber/disconnect
+// Jobber calls this webhook when a user removes your app from their account.
+// We MUST call the appDisconnect GraphQL mutation back to Jobber to confirm,
+// then clean up our stored tokens and webhooks.
+router.post('/jobber/disconnect', async (req, res) => {
+  try {
+    const accountId = req.body?.accountId || req.body?.account_id;
+
+    // Acknowledge immediately — Jobber requires a 200 within a few seconds
+    res.status(200).json({ received: true });
+
+    // Find the integration record by access token header or accountId
+    // Jobber sends an Authorization header with the app's token on disconnect
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.replace('Bearer ', '').trim();
+
+    let integrationRows = [];
+
+    if (token) {
+      const result = await query(
+        `SELECT i.id, i.location_id, i.access_token, l.customer_id
+         FROM integrations i
+         JOIN locations l ON l.id = i.location_id
+         WHERE i.provider = 'jobber' AND i.access_token = $1`,
+        [token]
+      );
+      integrationRows = result.rows;
+    }
+
+    // If not found by token, try to find all jobber integrations for this account
+    if (!integrationRows.length && accountId) {
+      const result = await query(
+        `SELECT i.id, i.location_id, i.access_token, l.customer_id
+         FROM integrations i
+         JOIN locations l ON l.id = i.location_id
+         WHERE i.provider = 'jobber' AND i.status = 'connected'`
+      );
+      integrationRows = result.rows;
+    }
+
+    for (const row of integrationRows) {
+      // Call appDisconnect mutation on Jobber to confirm the disconnect
+      try {
+        await fetch(JOBBER_API_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${row.access_token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            query: `
+              mutation AppDisconnect {
+                appDisconnect {
+                  app { id name }
+                }
+              }
+            `,
+          }),
+        });
+      } catch (e) {
+        logger.warn('Jobber appDisconnect mutation error:', e.message);
+      }
+
+      // Mark integration as disconnected in our DB
+      await query(
+        `UPDATE integrations
+         SET status = 'disconnected', access_token = NULL, refresh_token = NULL, updated_at = NOW()
+         WHERE id = $1`,
+        [row.id]
+      ).catch(e => logger.warn('DB disconnect error:', e.message));
+
+      // Audit log
+      await query(
+        `INSERT INTO audit_log (customer_id, action, details)
+         VALUES ($1, 'integration_disconnected', '{"provider":"jobber"}'::jsonb)`,
+        [row.customer_id]
+      ).catch(() => {});
+
+      logger.info(`Jobber disconnected for location ${row.location_id}`);
+    }
+  } catch (err) {
+    logger.error('Jobber disconnect error:', err.message);
+  }
+});
+
+// ── JOBBER RECONNECT AFTER DISCONNECT ─────────────────────────────────────────
+// If a user disconnects and reconnects, the /jobber/callback route handles it
+// via the ON CONFLICT upsert — no extra code needed. The disconnect above
+// sets status='disconnected' so the callback will UPDATE the existing row
+// back to 'connected' with fresh tokens.
