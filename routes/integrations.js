@@ -867,3 +867,232 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
 });
 
 module.exports = { router, handleStripePaymentForReview };
+
+// ══════════════════════════════════════════════════════════════════════════════
+// JOBBER INTEGRATION
+// OAuth 2.0 + Webhooks — triggers review request on job completed
+// Requires env vars: JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET
+// ══════════════════════════════════════════════════════════════════════════════
+
+const JOBBER_AUTH_URL     = 'https://api.getjobber.com/api/oauth/authorize';
+const JOBBER_TOKEN_URL    = 'https://api.getjobber.com/api/oauth/token';
+const JOBBER_API_URL      = 'https://api.getjobber.com/api/graphql';
+const JOBBER_WEBHOOK_EVENTS = ['JOB_COMPLETED'];
+
+// GET /api/integrations/jobber/connect
+// Redirect user to Jobber OAuth consent screen
+router.get('/jobber/connect', authenticateToken, async (req, res) => {
+  try {
+    const { locationId } = req.query;
+    if (!locationId) return res.status(400).json({ error: 'locationId is required' });
+
+    const state = Buffer.from(JSON.stringify({
+      customerId: req.user.customerId,
+      locationId,
+      ts: Date.now(),
+    })).toString('base64');
+
+    const params = new URLSearchParams({
+      client_id:     process.env.JOBBER_CLIENT_ID,
+      redirect_uri:  `${process.env.APP_URL}/api/integrations/jobber/callback`,
+      response_type: 'code',
+      state,
+    });
+
+    res.redirect(`${JOBBER_AUTH_URL}?${params}`);
+  } catch (err) {
+    logger.error('Jobber connect error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/integrations/jobber/callback
+// Handle OAuth callback — exchange code for tokens, register webhook
+router.get('/jobber/callback', async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    if (!code || !state) return res.status(400).json({ error: 'Missing code or state' });
+
+    const { customerId, locationId } = JSON.parse(Buffer.from(state, 'base64').toString());
+
+    // Exchange code for tokens
+    const tokenRes = await fetch(JOBBER_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:    'authorization_code',
+        client_id:     process.env.JOBBER_CLIENT_ID,
+        client_secret: process.env.JOBBER_CLIENT_SECRET,
+        redirect_uri:  `${process.env.APP_URL}/api/integrations/jobber/callback`,
+        code,
+      }),
+    });
+
+    const tokens = await tokenRes.json();
+    if (!tokens.access_token) {
+      logger.error('Jobber token exchange failed:', tokens);
+      return res.redirect(`${process.env.FRONTEND_URL}/dashboard/integrations?error=jobber_auth_failed`);
+    }
+
+    // Register webhook for JOB_COMPLETED
+    const webhookUrl = `${process.env.APP_URL}/api/integrations/jobber/webhook`;
+    for (const event of JOBBER_WEBHOOK_EVENTS) {
+      await fetch(JOBBER_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tokens.access_token}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({
+          query: `
+            mutation CreateWebhook($input: WebhookCreateInput!) {
+              webhookCreate(input: $input) {
+                webhook { id url httpMethod event { value } }
+              }
+            }
+          `,
+          variables: {
+            input: {
+              url:        webhookUrl,
+              httpMethod: 'POST',
+              event:      event,
+            },
+          },
+        }),
+      }).catch(e => logger.warn('Jobber webhook register error:', e.message));
+    }
+
+    // Save integration to DB
+    const existing = await query(
+      `SELECT id FROM integrations WHERE location_id=$1 AND provider='jobber'`,
+      [locationId]
+    );
+
+    if (existing.rows.length) {
+      await query(
+        `UPDATE integrations SET access_token=$1, refresh_token=$2, status='connected', updated_at=NOW()
+         WHERE location_id=$3 AND provider='jobber'`,
+        [tokens.access_token, tokens.refresh_token || null, locationId]
+      );
+    } else {
+      await query(
+        `INSERT INTO integrations (location_id, provider, access_token, refresh_token, status)
+         VALUES ($1,'jobber',$2,$3,'connected')`,
+        [locationId, tokens.access_token, tokens.refresh_token || null]
+      );
+    }
+
+    await query(
+      `INSERT INTO audit_log (customer_id, action, details)
+       SELECT customer_id, 'integration_connected', '{"provider":"jobber"}'::jsonb
+       FROM locations WHERE id=$1`,
+      [locationId]
+    ).catch(() => {});
+
+    logger.info(`Jobber connected for location ${locationId}`);
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard/integrations?connected=jobber`);
+  } catch (err) {
+    logger.error('Jobber callback error:', err.message);
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard/integrations?error=jobber_callback_failed`);
+  }
+});
+
+// POST /api/integrations/jobber/webhook
+// Handle Jobber webhook events — JOB_COMPLETED → send review request
+router.post('/jobber/webhook', async (req, res) => {
+  try {
+    const { topic, data } = req.body;
+
+    // Acknowledge immediately
+    res.status(200).json({ received: true });
+
+    if (topic !== 'JOB_COMPLETED') return;
+
+    const jobId       = data?.job?.id;
+    const clientEmail = data?.job?.client?.email;
+    const clientName  = data?.job?.client?.name || 'there';
+    const accountId   = data?.accountId;
+
+    if (!clientEmail || !accountId) return;
+
+    // Find integration by Jobber account ID to get location
+    const integResult = await query(
+      `SELECT i.location_id, i.access_token, l.customer_id
+       FROM integrations i
+       JOIN locations l ON l.id = i.location_id
+       WHERE i.provider='jobber' AND i.status='connected'
+       LIMIT 1`
+    );
+
+    if (!integResult.rows.length) return;
+
+    const { location_id, customer_id } = integResult.rows[0];
+
+    // Get customer review link from settings
+    const settingsResult = await query(
+      `SELECT review_link FROM locations WHERE id=$1`,
+      [location_id]
+    ).catch(() => ({ rows: [] }));
+
+    const reviewLink = settingsResult.rows[0]?.review_link ||
+      'https://g.page/r/review';
+
+    // Queue review request (insert into outbound queue or call SMS/email service)
+    await query(
+      `INSERT INTO review_requests
+         (customer_id, location_id, contact_email, contact_name, trigger_source, trigger_ref, status)
+       VALUES ($1,$2,$3,$4,'jobber',$5,'queued')
+       ON CONFLICT DO NOTHING`,
+      [customer_id, location_id, clientEmail, clientName, jobId]
+    ).catch(() => {
+      // Table may not exist yet — log and continue
+      logger.warn('review_requests table missing — skipping queue insert');
+    });
+
+    logger.info(`Jobber job_completed webhook: queued review request for ${clientEmail}`);
+  } catch (err) {
+    logger.error('Jobber webhook error:', err.message);
+  }
+});
+
+// POST /api/integrations/jobber/refresh
+// Refresh access token using refresh token
+router.post('/jobber/refresh', authenticateToken, async (req, res) => {
+  try {
+    const { locationId } = req.body;
+
+    const result = await query(
+      `SELECT refresh_token FROM integrations WHERE location_id=$1 AND provider='jobber'`,
+      [locationId]
+    );
+
+    if (!result.rows.length || !result.rows[0].refresh_token) {
+      return res.status(404).json({ error: 'No refresh token found' });
+    }
+
+    const tokenRes = await fetch(JOBBER_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type:    'refresh_token',
+        client_id:     process.env.JOBBER_CLIENT_ID,
+        client_secret: process.env.JOBBER_CLIENT_SECRET,
+        refresh_token: result.rows[0].refresh_token,
+      }),
+    });
+
+    const tokens = await tokenRes.json();
+    if (!tokens.access_token) return res.status(400).json({ error: 'Refresh failed' });
+
+    await query(
+      `UPDATE integrations SET access_token=$1, refresh_token=$2, updated_at=NOW()
+       WHERE location_id=$3 AND provider='jobber'`,
+      [tokens.access_token, tokens.refresh_token || result.rows[0].refresh_token, locationId]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Jobber refresh error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
