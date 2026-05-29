@@ -131,6 +131,14 @@ const authLimiter = rateLimit({
   message: { error: 'Too many login attempts. Please wait 15 minutes.' },
   standardHeaders: true, legacyHeaders: false,
   skipSuccessfulRequests: true,
+})
+
+// Looser limiter for admin login — only one person uses this
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60,
+  message: { error: 'Too many requests. Please wait 15 minutes.' },
+  standardHeaders: true, legacyHeaders: false,
+  skipSuccessfulRequests: true,
 });
 
 // Invite endpoints — 5 req / hour
@@ -189,6 +197,7 @@ app.use((req, res, next) => {
   verifyCsrf(req, res, next);
 });
 
+app.use('/api/admin/login', adminLimiter)
 app.use('/api', routes);
 app.use('/api/admin', adminRoutes);
 
