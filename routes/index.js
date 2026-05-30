@@ -938,7 +938,7 @@ router.post('/social/post', authenticateToken, async (req, res) => {
 
     // Load connections
     const conns = await query(
-      'SELECT platform, access_token, account_data FROM social_connections WHERE customer_id=$1 AND status='connected'',
+      "SELECT platform, access_token, account_data FROM social_connections WHERE customer_id=$1 AND status='connected'",
       [customerId]
     ).catch(() => ({ rows: [] }));
 
