@@ -710,6 +710,57 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
   }
 });
 
+// ── SURVEY RESULTS ────────────────────────────────────────────────────────────
+// GET /api/surveys — returns all completed surveys for the customer
+router.get('/surveys', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { search, dateRange } = req.query;
+
+    let whereClause = 'WHERE rr.customer_id = $1 AND rr.status IN ('completed','sent','queued')';
+    const params = [customerId];
+
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      whereClause += ` AND (LOWER(rr.contact_name) LIKE $${params.length} OR LOWER(rr.contact_email) LIKE $${params.length})`;
+    }
+
+    if (dateRange === 'today') {
+      whereClause += ` AND rr.created_at >= NOW() - INTERVAL '1 day'`;
+    } else if (dateRange === 'week') {
+      whereClause += ` AND rr.created_at >= NOW() - INTERVAL '7 days'`;
+    } else if (dateRange === 'month') {
+      whereClause += ` AND rr.created_at >= NOW() - INTERVAL '30 days'`;
+    }
+
+    const result = await query(
+      `SELECT
+         rr.id,
+         rr.contact_name    AS customer_name,
+         rr.contact_email   AS customer_email,
+         rr.status,
+         rr.created_at      AS completed_at,
+         sr.nps_score,
+         sr.path,
+         sr.left_review,
+         sr.would_return,
+         sr.detractor_q1,
+         sr.detractor_q2
+       FROM review_requests rr
+       LEFT JOIN survey_responses sr ON sr.review_request_id = rr.id
+       ${whereClause}
+       ORDER BY rr.created_at DESC
+       LIMIT 200`,
+      params
+    );
+
+    res.json({ surveys: result.rows });
+  } catch (err) {
+    logger.error('Surveys GET error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
 
 // ══════════════════════════════════════════════════════════════════════════════
