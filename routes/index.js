@@ -609,7 +609,7 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
     const businessName = custResult.rows[0]?.name || 'Your Business';
 
     const isPhone  = /^[+\d\s\-()]{7,}$/.test(destination) && !destination.includes('@');
-    const testLink = 'https://app.swarmreply.com/dashboard';
+    const testLink = 'https://app.swarmreply.com/review/preview';
 
     function fillVars(text) {
       return (text || '')
@@ -649,7 +649,7 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
       const htmlBody = body.replace(/\n/g, '<br>');
 
       const brandColor = template.brandColor || '#f5c842';
-      const brandLogo  = template.brandLogo  || 'https://app.swarmreply.com/bee-logo.png';
+      const brandLogo  = template.brandLogo  || 'https://swarmreply.com/bee-logo.png';
       const buttonText = template.buttonText || 'Share Your Feedback →';
       const buttonLink = testLink;
 
@@ -673,7 +673,7 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
         '<div style="text-align:center;margin-bottom:28px">',
         '<a href="' + buttonLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">' + buttonText + '</a>',
         '</div>',
-        '<div style="font-size:.78rem;color:#7a7670;text-align:center">Or copy this link: <a href="' + buttonLink + '" style="color:#7a7670">' + buttonLink + '</a></div>',
+        ''  /* removed copy link */,
         '</td></tr>',
 
         // Footer
