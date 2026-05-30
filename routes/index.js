@@ -717,7 +717,7 @@ router.get('/surveys', authenticateToken, async (req, res) => {
     const customerId = req.user.customerId || req.user.id;
     const { search, dateRange } = req.query;
 
-    let whereClause = 'WHERE rr.customer_id = $1 AND rr.status IN ('completed','sent','queued')';
+    let whereClause = "WHERE rr.customer_id = $1 AND rr.status IN ('completed','sent','queued')";
     const params = [customerId];
 
     if (search) {
