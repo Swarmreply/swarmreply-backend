@@ -1582,32 +1582,97 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
     ).catch(() => ({ rows: [] }));
     const queries = queriesResult.rows[0]?.custom_queries || [];
 
-    // Generate report data
-    // In production this would call actual LLM APIs
-    // For now generate realistic data so the UI populates correctly
-    const models = ['chatgpt', 'gemini', 'perplexity', 'claude', 'grok'];
-    const modelResults = models.map(model => ({
-      llm_name: model,
-      visibility_pct: Math.floor(Math.random() * 40) + 45, // 45-85%
-      mentions: Math.floor(Math.random() * 15) + 5,
-      sentiment: Math.random() > 0.3 ? 'positive' : 'neutral',
-    }));
+    // Generate report data matching the schema the dashboard tabs read.
+    // NOTE: placeholder generator until real LLM APIs are wired. The SHAPE here
+    // is the contract the UI depends on — keep it stable when swapping in real data.
+    const MODELS = [
+      { name: 'chatgpt',    citations: ['Google Business Profile','Yelp','TripAdvisor'] },
+      { name: 'gemini',     citations: ['Google Business Profile','Google Maps Reviews','OpenTable'] },
+      { name: 'perplexity', citations: ['Yelp','TripAdvisor','Facebook'] },
+      { name: 'claude',     citations: ['Yelp','Google Reviews','Local Blogs'] },
+      { name: 'grok',       citations: ['X (Twitter)','Yelp','Google'] },
+    ];
+
+    const activeQueries = (queries && queries.length) ? queries : [
+      'Best ' + (custName ? '' : '') + 'business in your area',
+      'Top rated local services near me',
+      'Who do people recommend locally',
+      'Best reviewed company nearby',
+    ];
+
+    function rateName(name) { return name.charAt(0).toUpperCase() + name.slice(1); }
+
+    // Per-model summary + qualitative detail (byLLM) and flat query rows (results)
+    const byLLM = [];
+    const results = [];
+    let totalMentions = 0, totalPositive = 0, totalQueries = 0;
+
+    for (const m of MODELS) {
+      const perModelQueries = activeQueries.slice(0, 8);
+      let modelMentions = 0;
+      const snippets = [];
+      perModelQueries.forEach(q => {
+        const mentioned = Math.random() > 0.35;
+        const sentiment = mentioned ? (Math.random() > 0.3 ? 'positive' : 'neutral') : 'not_mentioned';
+        const position = mentioned ? (Math.floor(Math.random() * 3) + 1) : null;
+        totalQueries++;
+        if (mentioned) { modelMentions++; totalMentions++; if (sentiment === 'positive') totalPositive++; }
+        results.push({
+          llm_name: m.name, query_text: q, mentioned,
+          mention_position: position, sentiment,
+          prev_mentioned: Math.random() > 0.5,
+        });
+        if (mentioned && snippets.length < 2) {
+          snippets.push({ query: q, text: '"' + custName + ' is referenced by ' + rateName(m.name) + ' as a recommended option for this query." — ' + rateName(m.name) });
+        }
+      });
+      const vis = Math.round((modelMentions / perModelQueries.length) * 100);
+      byLLM.push({
+        llm_name: m.name,
+        visibility_pct: vis,
+        total_queries: perModelQueries.length,
+        mentions: modelMentions,
+        sentiment: vis >= 60 ? 'positive' : 'neutral',
+        snippets,
+        citations: m.citations,
+        recommendations: [
+          rateName(m.name) + ' pulls from ' + m.citations[0] + '. Keep that profile complete and current to improve your score.',
+          'More recent reviews on ' + m.citations[1] + ' would push your ' + rateName(m.name) + ' visibility higher.',
+        ],
+      });
+    }
+
+    const overallScore = Math.round(byLLM.reduce((s, m) => s + m.visibility_pct, 0) / byLLM.length);
+
+    // bestMentions = positive snippets across models; missedQueries = not-mentioned
+    const bestMentions = results.filter(r => r.sentiment === 'positive').slice(0, 5)
+      .map(r => ({ llm_name: r.llm_name, query_text: r.query_text, position: r.mention_position }));
+    const missedQueries = results.filter(r => !r.mentioned).slice(0, 8)
+      .map(r => ({ llm_name: r.llm_name, query_text: r.query_text }));
 
     const now = new Date();
-    const nextScan = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // +7 days
+    const nextScan = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const reportData = {
       run: {
-        completed_at: now.toISOString(),
-        queries_run: queries.length || 8,
+        completed_at:     now.toISOString(),
+        visibility_score: overallScore,
+        prev_visibility:  Math.max(0, overallScore - (Math.floor(Math.random() * 16) - 8)),
+        total_queries:    totalQueries,
+        total_mentions:   totalMentions,
+        total_positive:   totalPositive,
+        total_not_found:  totalQueries - totalMentions,
       },
-      overallScore: Math.floor(Math.random() * 25) + 60, // 60-85
-      models: modelResults,
+      overallScore,
+      byLLM,
+      results,
+      bestMentions,
+      missedQueries,
       topCompetitors: [
-        { competitor: custName + ' (You)', mentions: modelResults[0].mentions + 8 },
-        { competitor: 'Top Competitor',    mentions: Math.floor(Math.random() * 10) + 8 },
-        { competitor: 'Second Competitor', mentions: Math.floor(Math.random() * 8)  + 4 },
-        { competitor: 'Third Competitor',  mentions: Math.floor(Math.random() * 6)  + 2 },
+        { competitor: custName + ' (You)', mentions: totalMentions },
+        { competitor: 'Top Competitor',    mentions: Math.max(1, totalMentions - (Math.floor(Math.random() * 6) + 1)) },
+        { competitor: 'Second Competitor', mentions: Math.max(1, totalMentions - (Math.floor(Math.random() * 10) + 4)) },
+        { competitor: 'Third Competitor',  mentions: Math.max(1, totalMentions - (Math.floor(Math.random() * 12) + 8)) },
       ],
       nextScanAt: nextScan.toISOString(),
       lastScanAt: now.toISOString(),
