@@ -1340,6 +1340,71 @@ router.post('/review/:token/submit', async (req, res) => {
 });
 
 
+
+// ── IMPORT CONTACTS ───────────────────────────────────────────────────────────
+// POST /api/contacts/import — bulk insert contacts from a parsed CSV
+router.post('/contacts/import', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { rows, filename, segment } = req.body;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: 'No rows to import' });
+    }
+
+    let imported = 0, skipped = 0;
+    for (const r of rows) {
+      const email = (r.email || '').trim().toLowerCase();
+      const name  = (r.name || '').trim();
+      const phone = (r.phone || '').trim();
+      // Must have at least an email or phone
+      if (!email && !phone) { skipped++; continue; }
+      try {
+        const result = await query(
+          `INSERT INTO contacts (customer_id, name, email, phone, segment)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (customer_id, lower(email)) WHERE email IS NOT NULL
+           DO UPDATE SET name=COALESCE(EXCLUDED.name, contacts.name),
+                         phone=COALESCE(EXCLUDED.phone, contacts.phone)
+           RETURNING (xmax = 0) AS inserted`,
+          [customerId, name || null, email || null, phone || null, segment || 'all']
+        );
+        if (result.rows[0]?.inserted) imported++; else skipped++;
+      } catch (e) {
+        skipped++;
+      }
+    }
+
+    await query(
+      `INSERT INTO contact_imports (customer_id, filename, row_count, imported, skipped)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [customerId, filename || 'import.csv', rows.length, imported, skipped]
+    ).catch(() => {});
+
+    logger.info('Contact import: ' + imported + ' imported, ' + skipped + ' skipped for ' + customerId);
+    res.json({ success: true, imported, skipped, total: rows.length });
+  } catch (err) {
+    logger.error('contacts/import error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/contacts/imports — recent import history
+router.get('/contacts/imports', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const result = await query(
+      `SELECT id, filename, row_count, imported, skipped, created_at
+       FROM contact_imports WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 10`,
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+    res.json({ imports: result.rows });
+  } catch (err) {
+    logger.error('contacts/imports error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET CONTACTS ──────────────────────────────────────────────────────────────
 router.get('/contacts', authenticateToken, async (req, res) => {
   try {
