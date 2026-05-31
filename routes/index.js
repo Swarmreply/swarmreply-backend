@@ -1113,7 +1113,163 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
   }
 });
 
+// ── PUBLIC REVIEW PAGE (no auth — customer-facing) ────────────────────────────
+// GET /api/review/:token — load survey config + business branding for the page
+router.get('/review/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const rr = await query(
+      `SELECT rr.id, rr.contact_name, rr.customer_id, rr.location_id, c.name AS business_name
+       FROM review_requests rr
+       JOIN customers c ON c.id = rr.customer_id
+       WHERE rr.trigger_ref = $1
+       LIMIT 1`,
+      [token]
+    ).catch(() => ({ rows: [] }));
+
+    if (!rr.rows.length) return res.status(404).json({ error: 'Review request not found' });
+    const row = rr.rows[0];
+
+    // Load template settings (thresholds + verbiage)
+    const settings = await query(
+      'SELECT * FROM llm_settings WHERE customer_id=$1', [row.customer_id]
+    ).catch(() => ({ rows: [] }));
+
+    res.json({
+      businessName:    row.business_name,
+      contactName:     row.contact_name,
+      brandColor:      '#f5c842',
+      brandLogo:       'https://swarmreply.com/bee-logo.png',
+      promoterMin:     9,
+      neutralMin:      7,
+      npsQuestion:     'How likely are you to recommend {business} to a friend or family member?',
+      promoterMessage: "We're so glad you had a great experience! Would you mind sharing it online?",
+      neutralQuestion: 'Would you consider using {business} again in the future?',
+      detractorOpening:"We're sorry your experience didn't meet expectations. Your feedback helps us improve.",
+      detractorQ1:     'What aspect of your experience fell short?',
+      detractorQ2:     'What could we do better in the future?',
+      platforms:       [{ id:'google', name:'Google', color:'#4285F4', icon:'⭐', url:'#' }],
+    });
+  } catch (err) {
+    logger.error('GET /review/:token error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/review/:token/submit — save the customer's survey response
+router.post('/review/:token/submit', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { npsScore, path, wouldReturn, leftReview, platform, detractorQ1, detractorQ2 } = req.body;
+
+    const rr = await query(
+      'SELECT id, customer_id, location_id FROM review_requests WHERE trigger_ref=$1 LIMIT 1',
+      [token]
+    ).catch(() => ({ rows: [] }));
+
+    if (!rr.rows.length) return res.status(404).json({ error: 'Review request not found' });
+    const { id: reviewRequestId, customer_id, location_id } = rr.rows[0];
+
+    await query(
+      `INSERT INTO survey_responses
+         (review_request_id, customer_id, location_id, nps_score, path, would_return, left_review, review_platform, detractor_q1, detractor_q2, completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
+      [reviewRequestId, customer_id, location_id || null, npsScore, path,
+       wouldReturn ?? null, leftReview || false, platform || null, detractorQ1 || null, detractorQ2 || null]
+    );
+
+    // Mark the request completed
+    await query(
+      "UPDATE review_requests SET status='completed' WHERE id=$1", [reviewRequestId]
+    ).catch(() => {});
+
+    logger.info('Survey response saved for request ' + reviewRequestId + ' (score ' + npsScore + ', ' + path + ')');
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('POST /review/:token/submit error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ── GET CONTACTS ──────────────────────────────────────────────────────────────
+router.get('/contacts', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const result = await query(
+      "SELECT id, name, email, phone, segment, last_request_at AS last_request FROM contacts WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1000",
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+    const contacts = result.rows;
+    const segCounts = {};
+    contacts.forEach(c => { const s = c.segment || 'all'; segCounts[s] = (segCounts[s] || 0) + 1; });
+    const segments = [
+      { id: 'all', name: 'All contacts', count: contacts.length },
+      ...Object.keys(segCounts).filter(s => s !== 'all').map(s => ({ id: s, name: s.charAt(0).toUpperCase()+s.slice(1)+' customers', count: segCounts[s] })),
+    ];
+    res.json({ contacts, segments });
+  } catch (err) {
+    logger.error('contacts GET error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── BULK SEND REVIEW REQUESTS ─────────────────────────────────────────────────
+router.post('/review-requests/bulk-send', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const targets = req.body.contacts;
+    if (!Array.isArray(targets) || targets.length === 0) {
+      return res.status(400).json({ error: 'No contacts provided' });
+    }
+    if (!process.env.RESEND_TRANSACTIONAL_KEY && !process.env.RESEND_API_KEY) {
+      return res.status(503).json({ error: 'Email not configured. Add RESEND_TRANSACTIONAL_KEY to Railway.' });
+    }
+    const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
+    const businessName = custResult.rows[0]?.name || 'Your Business';
+    const locResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
+    const locationId = locResult.rows[0]?.id;
+    const resend = new Resend(process.env.RESEND_TRANSACTIONAL_KEY || process.env.RESEND_API_KEY);
+    const crypto = require('crypto');
+    const brandColor = '#f5c842';
+    const brandLogo = 'https://swarmreply.com/bee-logo.png';
+    let sent = 0, failed = 0;
+
+    for (const t of targets) {
+      if (!t.email || !t.email.trim()) { failed++; continue; }
+      const token = crypto.randomBytes(16).toString('hex');
+      const firstName = (t.name || '').trim().split(' ')[0] || 'there';
+      if (locationId) {
+        await query(
+          "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status) VALUES ($1,$2,$3,$4,$5,'bulk',$6,'sent')",
+          [customerId, locationId, t.name || null, t.email.trim(), t.phone || null, token]
+        ).catch(e => logger.warn('bulk insert error:', e.message));
+      }
+      const reviewLink = 'https://app.swarmreply.com/review/' + token;
+      const bodyHtml = 'Hi ' + firstName + ',<br><br>Thank you for choosing ' + businessName + '! We would love to hear how we did. It only takes a moment.';
+      const emailHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif"><table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px"><table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%"><tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0"><img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain"></td></tr><tr><td style="background:#ffffff;padding:36px 32px"><h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How did we do, ' + firstName + '?</h2><div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' + bodyHtml + '</div><div style="text-align:center"><a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Share Your Feedback &rarr;</a></div></td></tr><tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center"><span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span></td></tr></table></td></tr></table></body></html>';
+      try {
+        const { data, error } = await resend.emails.send({
+          from: process.env.SMTP_FROM || 'SwarmReply <nick@swarmreply.com>',
+          to: [t.email.trim()],
+          subject: 'How did we do, ' + firstName + '?',
+          text: 'Hi ' + firstName + ', thank you for choosing ' + businessName + '! Share your feedback: ' + reviewLink,
+          html: emailHtml,
+        });
+        if (error || !data?.id) { failed++; } else { sent++; }
+      } catch (e) { failed++; logger.warn('bulk email error ' + t.email + ':', e.message); }
+    }
+    logger.info('Bulk send: ' + sent + ' sent, ' + failed + ' failed');
+    res.json({ success: true, sent, failed });
+  } catch (err) {
+    logger.error('bulk-send error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // LLM / AI VISIBILITY ROUTES
