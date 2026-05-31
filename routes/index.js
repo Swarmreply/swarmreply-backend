@@ -1036,9 +1036,11 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
     const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
     const businessName = custResult.rows[0]?.name || 'Your Business';
 
-    const tmplResult = await query(
-      'SELECT custom_queries FROM llm_settings WHERE customer_id=$1', [customerId]
+    // Load the customer's saved template for branding + verbiage
+    const tmplRes = await query(
+      'SELECT config FROM review_templates WHERE customer_id=$1', [customerId]
     ).catch(() => ({ rows: [] }));
+    const tmpl = { ...TEMPLATE_DEFAULTS, ...(tmplRes.rows[0]?.config || {}) };
 
     // Get location for review link + create the review request record
     const locResult = await query(
@@ -1061,8 +1063,9 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
     }
 
     const reviewLink = 'https://app.swarmreply.com/review/' + token;
-    const brandColor = '#f5c842';
-    const brandLogo  = 'https://swarmreply.com/bee-logo.png';
+    const brandColor = tmpl.brandColor || '#f5c842';
+    const brandLogo  = tmpl.brandLogo  || 'https://swarmreply.com/bee-logo.png';
+    const buttonText = tmpl.buttonText || 'Share Your Feedback →';
     const firstName  = (name || '').trim().split(' ')[0] || 'there';
 
     const bodyText = 'Hi ' + firstName + ',\n\nThank you for choosing ' + businessName + '! We would love to hear how we did. It only takes a moment.';
@@ -1079,7 +1082,7 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
       '<h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How did we do, ' + firstName + '?</h2>',
       '<div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' + bodyText.replace(/\n/g,'<br>') + '</div>',
       '<div style="text-align:center;margin-bottom:8px">',
-      '<a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Share Your Feedback &rarr;</a>',
+      '<a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">' + buttonText + '</a>',
       '</td></tr>',
       '<tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center">',
       '<span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span>',
@@ -1116,6 +1119,60 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
   }
 });
 
+
+// ── REVIEW TEMPLATE: GET + SAVE ───────────────────────────────────────────────
+const TEMPLATE_DEFAULTS = {
+  brandColor: '#f5c842',
+  brandLogo: 'https://swarmreply.com/bee-logo.png',
+  buttonText: 'Share Your Feedback \u2192',
+  promoterMin: 9,
+  neutralMin: 7,
+  smsRequest: "Hi {name}, thanks for choosing {business}! We'd love your feedback - it only takes 30 seconds. {link}",
+  emailSubject: 'How did we do, {name}?',
+  emailBody: "Hi {name},\n\nThank you for choosing {business}! We would love to hear how we did. It only takes a moment.",
+  npsQuestion: 'How likely are you to recommend {business} to a friend or family member?',
+  promoterMessage: "We're so glad you had a great experience! Would you mind sharing it online?",
+  neutralQuestion: 'Would you consider using {business} again in the future?',
+  detractorOpening: "We're sorry your experience didn't meet expectations. Your feedback helps us improve.",
+  detractorQ1: 'What aspect of your experience fell short?',
+  detractorQ2: 'What could we do better in the future?',
+  detractorClosing: 'Thank you for sharing this with us. We take every piece of feedback seriously.',
+  platforms: ['google'],
+};
+
+// GET /api/templates — load the customer's saved review template
+router.get('/templates', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const result = await query(
+      'SELECT config FROM review_templates WHERE customer_id=$1', [customerId]
+    ).catch(() => ({ rows: [] }));
+    const config = result.rows[0]?.config || {};
+    res.json({ template: { ...TEMPLATE_DEFAULTS, ...config } });
+  } catch (err) {
+    logger.error('GET /templates error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/templates — save the customer's review template
+router.put('/templates', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const config = req.body.template || req.body.config || req.body;
+    await query(
+      `INSERT INTO review_templates (customer_id, config, updated_at)
+       VALUES ($1,$2,NOW())
+       ON CONFLICT (customer_id) DO UPDATE SET config=$2, updated_at=NOW()`,
+      [customerId, JSON.stringify(config)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('PUT /templates error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── PUBLIC REVIEW PAGE (no auth — customer-facing) ────────────────────────────
 // GET /api/review/:token — load survey config + business branding for the page
 router.get('/review/:token', async (req, res) => {
@@ -1134,25 +1191,40 @@ router.get('/review/:token', async (req, res) => {
     if (!rr.rows.length) return res.status(404).json({ error: 'Review request not found' });
     const row = rr.rows[0];
 
-    // Load template settings (thresholds + verbiage)
-    const settings = await query(
-      'SELECT * FROM llm_settings WHERE customer_id=$1', [row.customer_id]
+    const tmplRes = await query(
+      'SELECT config FROM review_templates WHERE customer_id=$1', [row.customer_id]
     ).catch(() => ({ rows: [] }));
+    const tmpl = { ...TEMPLATE_DEFAULTS, ...(tmplRes.rows[0]?.config || {}) };
+
+    const locRes = await query(
+      'SELECT google_review_url, facebook_review_url, yelp_review_url FROM locations WHERE id=$1',
+      [row.location_id]
+    ).catch(() => ({ rows: [] }));
+    const loc = locRes.rows[0] || {};
+
+    const PLATFORM_META = {
+      google:   { id:'google',   name:'Google',   color:'#4285F4', icon:'G', url: loc.google_review_url },
+      facebook: { id:'facebook', name:'Facebook', color:'#1877F2', icon:'f', url: loc.facebook_review_url },
+      yelp:     { id:'yelp',     name:'Yelp',     color:'#D32323', icon:'Y', url: loc.yelp_review_url },
+    };
+    const platforms = (tmpl.platforms || ['google'])
+      .map(pid => PLATFORM_META[pid])
+      .filter(p => p && p.url);
 
     res.json({
       businessName:    row.business_name,
       contactName:     row.contact_name,
-      brandColor:      '#f5c842',
-      brandLogo:       'https://swarmreply.com/bee-logo.png',
-      promoterMin:     9,
-      neutralMin:      7,
-      npsQuestion:     'How likely are you to recommend {business} to a friend or family member?',
-      promoterMessage: "We're so glad you had a great experience! Would you mind sharing it online?",
-      neutralQuestion: 'Would you consider using {business} again in the future?',
-      detractorOpening:"We're sorry your experience didn't meet expectations. Your feedback helps us improve.",
-      detractorQ1:     'What aspect of your experience fell short?',
-      detractorQ2:     'What could we do better in the future?',
-      platforms:       [{ id:'google', name:'Google', color:'#4285F4', icon:'⭐', url:'#' }],
+      brandColor:      tmpl.brandColor,
+      brandLogo:       tmpl.brandLogo,
+      promoterMin:     tmpl.promoterMin,
+      neutralMin:      tmpl.neutralMin,
+      npsQuestion:     tmpl.npsQuestion,
+      promoterMessage: tmpl.promoterMessage,
+      neutralQuestion: tmpl.neutralQuestion,
+      detractorOpening:tmpl.detractorOpening,
+      detractorQ1:     tmpl.detractorQ1,
+      detractorQ2:     tmpl.detractorQ2,
+      platforms:       platforms.length ? platforms : [PLATFORM_META.google],
     });
   } catch (err) {
     logger.error('GET /review/:token error:', err.message);
