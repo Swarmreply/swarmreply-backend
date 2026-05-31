@@ -195,6 +195,10 @@ app.use((req, res, next) => {
     '/api/admin/login',
   ];
   if (skipCsrf.includes(req.path)) return next();
+  // Public customer-facing review survey submissions have no CSRF token
+  if (req.path.startsWith('/api/review/')) return next();
+  // Public webchat widget endpoints
+  if (req.path.startsWith('/api/webchat/config') || req.path.startsWith('/api/webchat/session/')) return next();
   verifyCsrf(req, res, next);
 });
 
