@@ -1478,6 +1478,106 @@ router.post('/review-requests/bulk-send', authenticateToken, async (req, res) =>
   }
 });
 
+// ── CAMPAIGNS ─────────────────────────────────────────────────────────────────
+// GET /api/campaigns — list the customer's campaigns
+router.get('/campaigns', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const result = await query(
+      `SELECT id, name, message, segment, status, recipient_count, sent_count, reply_count,
+              scheduled_at, sent_at, created_at
+       FROM campaigns WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100`,
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+    res.json({ campaigns: result.rows });
+  } catch (err) {
+    logger.error('GET /campaigns error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/campaigns/usage — SMS quota for the current period
+router.get('/campaigns/usage', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    let result = await query(
+      'SELECT sms_sent, sms_limit FROM campaign_usage WHERE customer_id=$1', [customerId]
+    ).catch(() => ({ rows: [] }));
+
+    if (!result.rows.length) {
+      // Initialize a usage row on first read
+      await query(
+        'INSERT INTO campaign_usage (customer_id, sms_sent, sms_limit) VALUES ($1,0,2000) ON CONFLICT (customer_id) DO NOTHING',
+        [customerId]
+      ).catch(() => {});
+      result = { rows: [{ sms_sent: 0, sms_limit: 2000 }] };
+    }
+
+    // Aggregate real campaign stats for the stat cards
+    const stats = await query(
+      `SELECT
+         COALESCE(SUM(sent_count),0)  AS total_sent,
+         COALESCE(SUM(reply_count),0) AS total_replies,
+         COUNT(*)                     AS total_campaigns
+       FROM campaigns WHERE customer_id=$1 AND status='sent'`,
+      [customerId]
+    ).catch(() => ({ rows: [{ total_sent: 0, total_replies: 0, total_campaigns: 0 }] }));
+
+    const row = result.rows[0];
+    const s = stats.rows[0];
+    res.json({
+      usage: {
+        used:       parseInt(row.sms_sent) || 0,
+        limit:      parseInt(row.sms_limit) || 2000,
+        sms_sent:   parseInt(row.sms_sent) || 0,
+        sms_limit:  parseInt(row.sms_limit) || 2000,
+        total_sent:     parseInt(s.total_sent) || 0,
+        total_replies:  parseInt(s.total_replies) || 0,
+        total_campaigns:parseInt(s.total_campaigns) || 0,
+      }
+    });
+  } catch (err) {
+    logger.error('GET /campaigns/usage error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/campaigns — create a campaign record
+// NOTE: actual SMS delivery requires Twilio (not yet wired). This creates the
+// campaign as 'draft' so it's saved and listed; sending is enabled once Twilio is live.
+router.post('/campaigns', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { name, message, segment, scheduledAt } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Campaign name is required' });
+    if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required' });
+
+    // Count recipients in the segment (from contacts)
+    let recipientCount = 0;
+    try {
+      const seg = segment && segment !== 'all' ? segment : null;
+      const countRes = seg
+        ? await query('SELECT COUNT(*) AS c FROM contacts WHERE customer_id=$1 AND segment=$2 AND phone IS NOT NULL', [customerId, seg])
+        : await query('SELECT COUNT(*) AS c FROM contacts WHERE customer_id=$1 AND phone IS NOT NULL', [customerId]);
+      recipientCount = parseInt(countRes.rows[0].c) || 0;
+    } catch (e) { /* contacts table may be empty */ }
+
+    const status = scheduledAt ? 'scheduled' : 'draft';
+    const result = await query(
+      `INSERT INTO campaigns (customer_id, name, message, segment, status, recipient_count, scheduled_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING id, name, message, segment, status, recipient_count, sent_count, reply_count, scheduled_at, created_at`,
+      [customerId, name.trim(), message.trim(), segment || 'all', status, recipientCount, scheduledAt || null]
+    );
+
+    logger.info('Campaign created: ' + result.rows[0].id + ' (' + status + ', ' + recipientCount + ' recipients)');
+    res.json({ success: true, campaign: result.rows[0] });
+  } catch (err) {
+    logger.error('POST /campaigns error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
 
 
