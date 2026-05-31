@@ -1049,12 +1049,15 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
     // Generate a token for the review page
     const token = require('crypto').randomBytes(16).toString('hex');
 
-    if (locationId) {
+    try {
       await query(
         `INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status)
          VALUES ($1,$2,$3,$4,$5,'manual',$6,'sent')`,
-        [customerId, locationId, name || null, email.trim(), phone || null, token]
-      ).catch(e => logger.warn('review_requests insert error:', e.message));
+        [customerId, locationId || null, name || null, email.trim(), phone || null, token]
+      );
+    } catch (e) {
+      logger.error('review_requests insert failed:', e.message);
+      return res.status(500).json({ error: 'Could not create review request: ' + e.message });
     }
 
     const reviewLink = 'https://app.swarmreply.com/review/' + token;
@@ -1240,12 +1243,10 @@ router.post('/review-requests/bulk-send', authenticateToken, async (req, res) =>
       if (!t.email || !t.email.trim()) { failed++; continue; }
       const token = crypto.randomBytes(16).toString('hex');
       const firstName = (t.name || '').trim().split(' ')[0] || 'there';
-      if (locationId) {
-        await query(
-          "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status) VALUES ($1,$2,$3,$4,$5,'bulk',$6,'sent')",
-          [customerId, locationId, t.name || null, t.email.trim(), t.phone || null, token]
-        ).catch(e => logger.warn('bulk insert error:', e.message));
-      }
+      await query(
+        "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status) VALUES ($1,$2,$3,$4,$5,'bulk',$6,'sent')",
+        [customerId, locationId || null, t.name || null, t.email.trim(), t.phone || null, token]
+      ).catch(e => logger.warn('bulk insert error:', e.message));
       const reviewLink = 'https://app.swarmreply.com/review/' + token;
       const bodyHtml = 'Hi ' + firstName + ',<br><br>Thank you for choosing ' + businessName + '! We would love to hear how we did. It only takes a moment.';
       const emailHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif"><table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px"><table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%"><tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0"><img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain"></td></tr><tr><td style="background:#ffffff;padding:36px 32px"><h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How did we do, ' + firstName + '?</h2><div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' + bodyHtml + '</div><div style="text-align:center"><a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Share Your Feedback &rarr;</a></div></td></tr><tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center"><span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span></td></tr></table></td></tr></table></body></html>';
