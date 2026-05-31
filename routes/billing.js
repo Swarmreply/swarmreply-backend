@@ -338,10 +338,13 @@ router.post('/reactivate', authenticateToken, async (req, res) => {
 });
 
 
-// ── GET /api/billing/status ───────────────────────────────────────────────────
+// ── GET /api/billing/health ───────────────────────────────────────────────────
 // Returns billing health, days until next charge, lockout state.
 // Called by DashboardLayout on every page load.
-router.get('/status', authenticateToken, async (req, res) => {
+// F7-1: was a SECOND router.get('/status'), which Express never reached because
+// the rich /status above shadowed it — so locked/bannerLevel were always
+// undefined and the payment-failure lockout never triggered. Now its own path.
+router.get('/health', authenticateToken, async (req, res) => {
   try {
     const result = await query(
       `SELECT
