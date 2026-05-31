@@ -114,6 +114,13 @@ router.post('/locations', authenticateToken, async (req, res) => {
     );
 
     logger.info(`New location created: ${businessName} for customer ${customerId}`);
+
+    // Keep Stripe per-location billing in sync with the actual location count.
+    // Fire-and-forget: a billing hiccup must never block creating a location.
+    require('../services/locationBilling')
+      .syncLocationBilling(customerId)
+      .catch(e => logger.warn('Location billing sync after create failed:', e.message));
+
     res.status(201).json({ location: result.rows[0] });
   } catch (error) {
     logger.error('Create location error:', error.message);

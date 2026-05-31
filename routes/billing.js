@@ -20,6 +20,7 @@ const logger = require('../utils/logger');
 const { auditLog } = require('../middleware/audit');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const { syncLocationBilling, countActiveLocations, priceBreakdown, PRICING } = require('../services/locationBilling');
 
 // Plan metadata — single source of truth
 const PLANS = {
@@ -82,6 +83,12 @@ router.get('/status', authenticateToken, async (req, res) => {
 
     const plan = PLANS[customer.plan] || PLANS.starter;
 
+    // Per-location pricing context (DB-driven). Additive — existing consumers
+    // keep reading plan/account/stripe/availablePlans unchanged.
+    const isAnnual = customer.stripe_price_id === process.env.STRIPE_PRICE_BASE_ANNUAL;
+    const locationCount = await countActiveLocations(req.user.customerId);
+    const pricing = priceBreakdown(locationCount, isAnnual);
+
     // Fetch live data from Stripe
     let stripeData = null;
     if (customer.stripe_subscription_id) {
@@ -131,6 +138,9 @@ router.get('/status', authenticateToken, async (req, res) => {
           failureCount:     customer.payment_failure_count || 0
         },
         stripe: stripeData,
+        locationCount,
+        billingCycle: isAnnual ? 'annual' : 'monthly',
+        pricing,
         availablePlans: Object.entries(PLANS).map(([id, p]) => ({
           id,
           name:      p.name,
@@ -337,6 +347,21 @@ router.post('/reactivate', authenticateToken, async (req, res) => {
   }
 });
 
+
+// ── POST /api/billing/sync-locations ──────────────────────────────────────────
+// Reconcile the Stripe per-location add-on quantity with the customer's actual
+// active-location count. Safe to call anytime; used by the billing dashboard and
+// as a manual lever for location-creation paths that don't auto-sync.
+router.post('/sync-locations', authenticateToken, async (req, res) => {
+  try {
+    const result = await syncLocationBilling(req.user.customerId);
+    if (result.error) return res.status(502).json({ error: result.error });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logger.error('Sync-locations error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── GET /api/billing/health ───────────────────────────────────────────────────
 // Returns billing health, days until next charge, lockout state.

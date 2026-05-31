@@ -37,21 +37,17 @@ const emailService = require('../services/emailService');
 // Get these from: Stripe Dashboard → Products
 // Each product has a Price ID like price_xxx
 // ============================================
-const PRICE_TO_PLAN = {
-  // Replace these with your real Stripe Price IDs
-  // Stripe Dashboard → Products → click each product → copy Price ID
-  [process.env.STRIPE_PRICE_STARTER]: 'starter',  // $79/mo
-  [process.env.STRIPE_PRICE_GROWTH]:  'growth',   // $139/mo
-  [process.env.STRIPE_PRICE_AGENCY]:  'agency',   // $289/mo
-};
-
+// Pricing model: a single all-features plan priced per location. The base price
+// (and the per-location add-on) all resolve to the same internal plan key, so
+// feature/team gating stays stable. Per-location charges are handled by the
+// add-on item quantity in services/locationBilling.js, not by the plan key.
 function getPlanFromPriceId(priceId) {
   const map = {
     [process.env.STRIPE_PRICE_BASE_MONTHLY]:            'starter',
     [process.env.STRIPE_PRICE_BASE_ANNUAL]:             'starter',
     [process.env.STRIPE_PRICE_LOCATION_MONTHLY]:        'starter',
     [process.env.STRIPE_PRICE_LOCATION_ANNUAL]:         'starter',
-    // Legacy price IDs
+    // Legacy tier price IDs (pre per-location pricing)
     [process.env.STRIPE_PRICE_STARTER]:                 'starter',
     [process.env.STRIPE_PRICE_GROWTH]:                  'growth',
   };
