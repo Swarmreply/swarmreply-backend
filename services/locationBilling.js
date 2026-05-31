@@ -1,0 +1,134 @@
+// ============================================
+// services/locationBilling.js
+// DB-driven per-location billing.
+//
+// Pricing model (matches the marketing site):
+//   • Base plan ........ $99/mo  (covers location #1)
+//   • Locations 2–5 .... $79/mo each
+//   • Locations 6–25 ... $69/mo each
+//   • 26+ .............. Agency (contact sales, handled off-platform)
+//
+// Stripe shape: ONE subscription with two recurring items —
+//   1. Base price            (qty 1)
+//   2. Location add-on price (qty = activeLocations - 1)
+// The add-on price is configured in Stripe as GRADUATED tiers
+// (units 1–4 = $79, units 5–24 = $69), so we only ever set the quantity
+// here — Stripe applies the per-unit math. We never compute charges ourselves.
+// ============================================
+
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const { query } = require('../database/db');
+const logger = require('../utils/logger');
+
+const BASE_MONTHLY     = process.env.STRIPE_PRICE_BASE_MONTHLY;
+const BASE_ANNUAL      = process.env.STRIPE_PRICE_BASE_ANNUAL;
+const LOCATION_MONTHLY = process.env.STRIPE_PRICE_LOCATION_MONTHLY;
+const LOCATION_ANNUAL  = process.env.STRIPE_PRICE_LOCATION_ANNUAL;
+
+// Display-only rates (for estimates/breakdowns shown in the dashboard).
+// Stripe remains the source of truth for what is actually charged.
+const PRICING = {
+  base:           99,
+  tier1:          79,   // locations 2–5
+  tier2:          69,   // locations 6–25
+  annualDiscount: 0.90, // 10% off
+  maxSelfServe:   25,   // 26+ → agency
+};
+
+// Mirror of the website's calculator — for display/estimates only.
+function estimateMonthly(locationCount) {
+  const n = parseInt(locationCount, 10) || 0;
+  if (n < 1) return PRICING.base;
+  let total = PRICING.base;                       // location #1
+  if (n > 1) total += Math.min(n - 1, 4) * PRICING.tier1;  // 2–5
+  if (n > 5) total += Math.min(n - 5, 20) * PRICING.tier2; // 6–25
+  return total;
+}
+
+function priceBreakdown(locationCount, annual = false) {
+  const n = parseInt(locationCount, 10) || 1;
+  const f = annual ? PRICING.annualDiscount : 1;
+  const rows = [{ label: 'First location', qty: 1, rate: Math.round(PRICING.base * f) }];
+  if (n > 1) rows.push({ label: 'Locations 2–5', qty: Math.min(n - 1, 4), rate: Math.round(PRICING.tier1 * f) });
+  if (n > 5) rows.push({ label: 'Locations 6–25', qty: Math.min(n - 5, 20), rate: Math.round(PRICING.tier2 * f) });
+  const monthly = Math.round(estimateMonthly(n) * f);
+  return { rows, monthly, annual: annual ? monthly * 12 : null };
+}
+
+async function countActiveLocations(customerId) {
+  const r = await query(
+    `SELECT COUNT(*)::int AS n FROM locations WHERE customer_id = $1 AND is_active = true`,
+    [customerId]
+  );
+  return r.rows[0]?.n || 0;
+}
+
+// Sync the Stripe add-on quantity to the customer's actual active-location count.
+// Defensive by design: never throws — callers (location create, etc.) must not
+// fail just because a billing sync hiccuped. Returns a result object instead.
+async function syncLocationBilling(customerId) {
+  try {
+    const cr = await query(
+      `SELECT stripe_subscription_id, stripe_price_id, status
+       FROM customers WHERE id = $1`,
+      [customerId]
+    );
+    const customer = cr.rows[0];
+    if (!customer) return { success: false, skipped: true, reason: 'no_customer' };
+    if (!customer.stripe_subscription_id) {
+      return { success: false, skipped: true, reason: 'no_subscription' };
+    }
+
+    const locationCount = await countActiveLocations(customerId);
+    const addonQty = Math.max(0, locationCount - 1);
+
+    const sub = await stripe.subscriptions.retrieve(customer.stripe_subscription_id);
+
+    // Determine billing cycle from the base item on the subscription.
+    const isAnnual =
+      sub.items.data.some(i => i.price?.id === BASE_ANNUAL) ||
+      customer.stripe_price_id === BASE_ANNUAL;
+    const locationPrice = isAnnual ? LOCATION_ANNUAL : LOCATION_MONTHLY;
+
+    if (!locationPrice) {
+      logger.warn('syncLocationBilling: location price env var not set — skipping');
+      return { success: false, skipped: true, reason: 'no_location_price' };
+    }
+
+    // Find an existing location add-on item (either cycle).
+    const existingAddon = sub.items.data.find(
+      i => i.price?.id === LOCATION_MONTHLY || i.price?.id === LOCATION_ANNUAL
+    );
+
+    let items;
+    if (existingAddon) {
+      items = addonQty > 0
+        ? [{ id: existingAddon.id, price: locationPrice, quantity: addonQty }]
+        : [{ id: existingAddon.id, deleted: true }];
+    } else if (addonQty > 0) {
+      items = [{ price: locationPrice, quantity: addonQty }];
+    } else {
+      return { success: true, locationCount, addonQty, changed: false };
+    }
+
+    await stripe.subscriptions.update(customer.stripe_subscription_id, {
+      items,
+      proration_behavior: 'create_prorations',
+    });
+
+    logger.info(`Location billing synced: customer ${customerId} → ${locationCount} active locations (add-on qty ${addonQty})`);
+    return { success: true, locationCount, addonQty, changed: true };
+  } catch (err) {
+    logger.error('syncLocationBilling error:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+module.exports = {
+  syncLocationBilling,
+  countActiveLocations,
+  estimateMonthly,
+  priceBreakdown,
+  PRICING,
+};
