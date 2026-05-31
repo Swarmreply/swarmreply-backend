@@ -941,13 +941,20 @@ router.get('/social/callback/:platform', async (req, res) => {
 
     if (!accessToken) throw new Error('No access token received from ' + platform);
 
-    await query(
-      `INSERT INTO social_connections (customer_id, platform, access_token, refresh_token, account_data, status)
-       VALUES ($1,$2,$3,$4,$5,'connected')
-       ON CONFLICT (customer_id, platform)
-       DO UPDATE SET access_token=$3, refresh_token=$4, account_data=$5, status='connected', updated_at=NOW()`,
-      [customerId, platform, accessToken, refreshToken || null, JSON.stringify(accountData)]
-    ).catch(e => logger.warn('social_connections save error:', e.message));
+    // If the token save fails, the connection didn't actually persist — surface
+    // an error instead of redirecting with ?connected (which would lie to the user).
+    try {
+      await query(
+        `INSERT INTO social_connections (customer_id, platform, access_token, refresh_token, account_data, status)
+         VALUES ($1,$2,$3,$4,$5,'connected')
+         ON CONFLICT (customer_id, platform)
+         DO UPDATE SET access_token=$3, refresh_token=$4, account_data=$5, status='connected', updated_at=NOW()`,
+        [customerId, platform, accessToken, refreshToken || null, JSON.stringify(accountData)]
+      );
+    } catch (e) {
+      logger.error('social_connections save error:', e.message);
+      return res.redirect(FRONTEND_URL + '/dashboard/settings?error=social_save_failed&platform=' + platform);
+    }
 
     logger.info('Social connected:', platform, 'for', customerId);
     res.redirect(FRONTEND_URL + '/dashboard/settings?connected=' + platform);
@@ -955,6 +962,43 @@ router.get('/social/callback/:platform', async (req, res) => {
   } catch (err) {
     logger.error('Social callback error:', platform, err.message);
     res.redirect(FRONTEND_URL + '/dashboard/settings?error=social_callback_failed&platform=' + platform);
+  }
+});
+
+// ── LIST CONNECTIONS ──────────────────────────────────────────────────────────
+// GET /api/social/connections — which platforms this customer has connected.
+// Backs the IntegrationsTab connected-state badges in settings.
+router.get('/social/connections', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const result = await query(
+      "SELECT platform, status, updated_at FROM social_connections WHERE customer_id=$1 AND status='connected'",
+      [customerId]
+    );
+    const platforms = result.rows.map(r => r.platform);
+    res.json({ success: true, platforms, connections: result.rows });
+  } catch (err) {
+    logger.error('Social connections list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DISCONNECT ────────────────────────────────────────────────────────────────
+// POST /api/social/disconnect/:platform — actually revoke in the DB so the
+// token can no longer be used by /social/post. (UI button was cosmetic before.)
+router.post('/social/disconnect/:platform', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { platform } = req.params;
+    await query(
+      "UPDATE social_connections SET status='disconnected', access_token=NULL, refresh_token=NULL, updated_at=NOW() WHERE customer_id=$1 AND platform=$2",
+      [customerId, platform]
+    );
+    logger.info('Social disconnected:', platform, 'for', customerId);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Social disconnect error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

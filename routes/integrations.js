@@ -34,7 +34,9 @@ const {
 const logger = require('../utils/logger');
 
 const FE = process.env.FRONTEND_URL || 'https://swarmreply.com';
-const BE = process.env.BACKEND_URL  || 'http://localhost:3001';
+// B3: Jobber + index.js use APP_URL in prod. Prefer it here so Square/HubSpot/
+// Shopify/Calendly redirect URIs don't silently fall back to localhost on Railway.
+const BE = process.env.APP_URL || process.env.BACKEND_URL || 'http://localhost:3001';
 
 // ── HELPER: verify HMAC signature ────────────────────────────────────────────
 function verifyHmac(body, secret, header, algo = 'sha256') {
@@ -818,10 +820,20 @@ router.post('/acuity/connect', authenticateToken, async (req, res) => {
       delayMinutes: 1440, // 24h after appointment
     });
 
-    // Register webhook
+    // B2: Acuity webhooks carry no account/user id, so a shared target URL
+    // can't be attributed to a tenant. Register a per-integration target with
+    // the integration id in the query string instead.
+    const acuityInteg = await query(
+      `SELECT id FROM integrations WHERE location_id=$1 AND provider='acuity'`,
+      [locRes.rows[0].id]
+    ).catch(() => ({ rows: [] }));
+    const acuityIntegId = acuityInteg.rows[0]?.id;
+
+    // Register webhook (target scoped to this integration)
     await axios.post(
       'https://acuityscheduling.com/api/v1/webhooks',
-      { event: 'appointment.scheduled', target: `${BE}/api/integrations/acuity/webhook` },
+      { event: 'appointment.scheduled',
+        target: `${BE}/api/integrations/acuity/webhook?integration=${acuityIntegId || ''}` },
       { auth: { username: userId, password: apiKey } }
     ).catch(e => logger.warn('Acuity webhook reg failed:', e.message));
 
@@ -840,14 +852,32 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
     const { action, id } = req.body;
     if (action !== 'scheduled' && action !== 'rescheduled') return;
 
-    // Acuity doesn't include user context in webhooks directly
-    // so we match by appointment's calendar owner
-    const { calendarID } = req.body;
-    const integration = await getIntegrationByProvider('acuity', {
-      acuity_user_id: req.body.calendarID?.toString()
-    }) || await getIntegrationByProvider('acuity', {}); // fallback to first acuity integration
+    // B2: identify the integration from the per-integration target URL.
+    // Removed the old `getIntegrationByProvider('acuity', {})` fallback, which
+    // grabbed the FIRST acuity integration and misattributed events across
+    // tenants. If we can't identify the integration, skip rather than guess.
+    let integration = null;
+    const integrationId = req.query.integration;
 
-    if (!integration) return;
+    if (integrationId) {
+      const r = await query(
+        `SELECT * FROM integrations WHERE id=$1 AND provider='acuity' AND status='connected'`,
+        [integrationId]
+      ).catch(() => ({ rows: [] }));
+      integration = r.rows[0] || null;
+    }
+
+    // Fallback: match by calendar owner if the provider stored it.
+    if (!integration && req.body.calendarID) {
+      integration = await getIntegrationByProvider('acuity', {
+        acuity_user_id: req.body.calendarID.toString()
+      });
+    }
+
+    if (!integration) {
+      logger.warn('Acuity webhook: could not identify integration — skipping');
+      return;
+    }
 
     const extId = `acuity_appt_${id}`;
     if (await isDuplicate('acuity', extId)) return;
@@ -865,8 +895,6 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
     logger.error('Acuity webhook error:', err.message);
   }
 });
-
-module.exports = { router, handleStripePaymentForReview };
 
 // ══════════════════════════════════════════════════════════════════════════════
 // JOBBER INTEGRATION
@@ -934,6 +962,25 @@ router.get('/jobber/callback', async (req, res) => {
       return res.redirect(`${process.env.FRONTEND_URL}/dashboard/integrations?error=jobber_auth_failed`);
     }
 
+    // B1: fetch the Jobber account id so inbound webhooks (which carry
+    // data.accountId) can be matched to THIS integration row, instead of
+    // blindly grabbing the first connected Jobber integration.
+    let jobberAccountId = null;
+    try {
+      const acctRes = await fetch(JOBBER_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tokens.access_token}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({ query: `query { account { id } }` }),
+      });
+      const acctJson = await acctRes.json();
+      jobberAccountId = acctJson?.data?.account?.id || null;
+    } catch (e) {
+      logger.warn('Jobber account id fetch failed:', e.message);
+    }
+
     // Register webhook for JOB_COMPLETED
     const webhookUrl = `${process.env.APP_URL}/api/integrations/jobber/webhook`;
     for (const event of JOBBER_WEBHOOK_EVENTS) {
@@ -975,15 +1022,15 @@ router.get('/jobber/callback', async (req, res) => {
 
     if (existing.rows.length) {
       await query(
-        `UPDATE integrations SET access_token=$1, refresh_token=$2, status='connected', updated_at=NOW()
-         WHERE location_id=$3 AND provider='jobber'`,
-        [tokens.access_token, tokens.refresh_token || null, locationId]
+        `UPDATE integrations SET access_token=$1, refresh_token=$2, external_account_id=$3, status='connected', updated_at=NOW()
+         WHERE location_id=$4 AND provider='jobber'`,
+        [tokens.access_token, tokens.refresh_token || null, jobberAccountId, locationId]
       );
     } else {
       await query(
-        `INSERT INTO integrations (location_id, provider, access_token, refresh_token, status)
-         VALUES ($1,'jobber',$2,$3,'connected')`,
-        [locationId, tokens.access_token, tokens.refresh_token || null]
+        `INSERT INTO integrations (location_id, provider, access_token, refresh_token, external_account_id, status)
+         VALUES ($1,'jobber',$2,$3,$4,'connected')`,
+        [locationId, tokens.access_token, tokens.refresh_token || null, jobberAccountId]
       );
     }
 
@@ -1016,45 +1063,47 @@ router.post('/jobber/webhook', async (req, res) => {
     const jobId       = data?.job?.id;
     const clientEmail = data?.job?.client?.email;
     const clientName  = data?.job?.client?.name || 'there';
+    const clientPhone = data?.job?.client?.phone || null;
     const accountId   = data?.accountId;
 
     if (!clientEmail || !accountId) return;
 
-    // Find integration by Jobber account ID to get location
+    // B1: match the integration by the Jobber account that sent this event.
+    // Previously this grabbed the FIRST connected Jobber integration, so a job
+    // completed in customer B's account fired a review request for customer A.
+    // Select i.* + customer_id so the shared service has everything it needs.
     const integResult = await query(
-      `SELECT i.location_id, i.access_token, l.customer_id
+      `SELECT i.*, l.customer_id
        FROM integrations i
        JOIN locations l ON l.id = i.location_id
        WHERE i.provider='jobber' AND i.status='connected'
-       LIMIT 1`
+         AND i.external_account_id = $1
+       LIMIT 1`,
+      [String(accountId)]
     );
 
-    if (!integResult.rows.length) return;
+    if (!integResult.rows.length) {
+      logger.warn(`Jobber webhook: no connected integration for account ${accountId}`);
+      return;
+    }
 
-    const { location_id, customer_id } = integResult.rows[0];
+    const integration = integResult.rows[0];
 
-    // Get customer review link from settings
-    const settingsResult = await query(
-      `SELECT review_link FROM locations WHERE id=$1`,
-      [location_id]
-    ).catch(() => ({ rows: [] }));
+    // B5: route through the shared service like every other provider, so the
+    // request is actually SENT (email/SMS) instead of left as a 'queued' row.
+    // Dedup + event logging via integration_events, consistent with the others.
+    const extId = `jobber_job_${jobId}`;
+    if (await isDuplicate('jobber', extId)) return;
+    const eventId = await logEvent(integration.id, 'jobber', 'JOB_COMPLETED', extId, req.body);
 
-    const reviewLink = settingsResult.rows[0]?.review_link ||
-      'https://g.page/r/review';
+    const contact = {
+      name:  clientName || clientEmail.split('@')[0] || 'Customer',
+      email: clientEmail,
+      phone: clientPhone,
+    };
 
-    // Queue review request (insert into outbound queue or call SMS/email service)
-    await query(
-      `INSERT INTO review_requests
-         (customer_id, location_id, contact_email, contact_name, trigger_source, trigger_ref, status)
-       VALUES ($1,$2,$3,$4,'jobber',$5,'queued')
-       ON CONFLICT DO NOTHING`,
-      [customer_id, location_id, clientEmail, clientName, jobId]
-    ).catch(() => {
-      // Table may not exist yet — log and continue
-      logger.warn('review_requests table missing — skipping queue insert');
-    });
-
-    logger.info(`Jobber job_completed webhook: queued review request for ${clientEmail}`);
+    await triggerReviewRequest(integration, contact, eventId);
+    logger.info(`Jobber job_completed: review request triggered for ${clientEmail}`);
   } catch (err) {
     logger.error('Jobber webhook error:', err.message);
   }
@@ -1132,15 +1181,24 @@ router.post('/jobber/disconnect', async (req, res) => {
       integrationRows = result.rows;
     }
 
-    // If not found by token, try to find all jobber integrations for this account
+    // If not found by token, match by the Jobber account id that sent the
+    // disconnect. B1: previously this fell back to "ALL connected jobber
+    // integrations", so one customer removing the app disconnected everyone.
     if (!integrationRows.length && accountId) {
       const result = await query(
         `SELECT i.id, i.location_id, i.access_token, l.customer_id
          FROM integrations i
          JOIN locations l ON l.id = i.location_id
-         WHERE i.provider = 'jobber' AND i.status = 'connected'`
+         WHERE i.provider = 'jobber' AND i.status = 'connected'
+           AND i.external_account_id = $1`,
+        [String(accountId)]
       );
       integrationRows = result.rows;
+    }
+
+    if (!integrationRows.length) {
+      logger.warn(`Jobber disconnect: no matching integration (account ${accountId || 'unknown'})`);
+      return;
     }
 
     for (const row of integrationRows) {
@@ -1193,3 +1251,8 @@ router.post('/jobber/disconnect', async (req, res) => {
 // via the ON CONFLICT upsert — no extra code needed. The disconnect above
 // sets status='disconnected' so the callback will UPDATE the existing row
 // back to 'connected' with fresh tokens.
+
+// ── EXPORTS ───────────────────────────────────────────────────────────────────
+// B8: moved to end of file so every route above (including the entire Jobber
+// section) is attached to `router` before it is exported.
+module.exports = { router, handleStripePaymentForReview };
