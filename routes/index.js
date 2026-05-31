@@ -1120,6 +1120,49 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
 });
 
 
+
+// ── REVIEW PLATFORM URLs (for promoter links) ─────────────────────────────────
+// GET /api/locations/review-urls — list locations with their review URLs
+router.get('/locations/review-urls', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const result = await query(
+      `SELECT id, business_name, google_review_url, facebook_review_url, yelp_review_url
+       FROM locations WHERE customer_id=$1 ORDER BY created_at ASC`,
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+    res.json({ locations: result.rows });
+  } catch (err) {
+    logger.error('GET review-urls error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/locations/:id/review-urls — save review URLs for one location
+router.put('/locations/:id/review-urls', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { id } = req.params;
+    const { googleReviewUrl, facebookReviewUrl, yelpReviewUrl } = req.body;
+
+    const result = await query(
+      `UPDATE locations
+       SET google_review_url   = $1,
+           facebook_review_url = $2,
+           yelp_review_url     = $3,
+           updated_at = NOW()
+       WHERE id = $4 AND customer_id = $5
+       RETURNING id`,
+      [googleReviewUrl || null, facebookReviewUrl || null, yelpReviewUrl || null, id, customerId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Location not found' });
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('PUT review-urls error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── REVIEW TEMPLATE: GET + SAVE ───────────────────────────────────────────────
 const TEMPLATE_DEFAULTS = {
   brandColor: '#f5c842',
