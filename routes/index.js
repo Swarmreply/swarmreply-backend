@@ -602,18 +602,33 @@ router.get('/onboarding/status', authenticateToken, async (req, res) => {
     ).catch(() => ({ rows: [] }));
     const step5_survey     = tmplResult.rows.length > 0 || parseInt(row.has_review_url) > 0;
 
-    const steps = [step1_business, step2_google, step3_tone, step4_request, step5_survey];
-    const completedCount = steps.filter(Boolean).length;
+    const STEP_LABELS = [
+      'Add your business',
+      'Connect Google Business Profile',
+      'Set your AI tone',
+      'Send your first review request',
+      'Set up your NPS survey',
+    ];
+    const stepFlags = [step1_business, step2_google, step3_tone, step4_request, step5_survey];
+    const completedCount = stepFlags.filter(Boolean).length;
     // currentStep = first incomplete step (1-indexed), or 5 if all done
-    const firstIncomplete = steps.findIndex(s => !s);
+    const firstIncomplete = stepFlags.findIndex(s => !s);
     const currentStep = firstIncomplete === -1 ? 5 : firstIncomplete + 1;
+    // Return steps as an ARRAY (the shape the onboarding wizard expects:
+    // status.steps.find(st => st.step === n)?.completed).
+    const steps = stepFlags.map((done, i) => ({
+      step:      i + 1,
+      completed: !!done,
+      label:     STEP_LABELS[i],
+    }));
 
     res.json({
       onboarding: {
         completed:        completedCount >= 5,
         completedCount,
         currentStep,
-        steps: {
+        steps,
+        flags: {
           business_created:   step1_business,
           google_connected:   step2_google,
           tone_configured:    step3_tone,
