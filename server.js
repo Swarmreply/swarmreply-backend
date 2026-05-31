@@ -33,6 +33,7 @@ const { testConnection } = require('./database/db');
 const { startScheduler } = require('./scheduler');
 const routes      = require('./routes/index');
 const adminRoutes = require('./routes/admin');
+const webchatRoutes = require('./routes/webchat');
 const { sanitizeBody }        = require('./middleware/validate');
 const { verifyCsrf, generateCsrf } = require('./middleware/csrf');
 const cookieParser             = require('cookie-parser');
@@ -198,6 +199,7 @@ app.use((req, res, next) => {
 });
 
 app.use('/api/admin/login', adminLimiter)
+app.use('/api/webchat', webchatRoutes);
 app.use('/api', routes);
 app.use('/api/admin', adminRoutes);
 
