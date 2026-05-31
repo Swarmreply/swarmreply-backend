@@ -1020,6 +1020,99 @@ router.get('/social/posts', authenticateToken, async (req, res) => {
   }
 });
 
+// ── SEND REVIEW REQUEST ───────────────────────────────────────────────────────
+// POST /api/review-requests/send
+// Sends a live review request email (and optionally SMS) to a customer
+router.post('/review-requests/send', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { name, email, phone } = req.body;
+
+    if (!email || !email.trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Get business info + template settings
+    const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
+    const businessName = custResult.rows[0]?.name || 'Your Business';
+
+    const tmplResult = await query(
+      'SELECT custom_queries FROM llm_settings WHERE customer_id=$1', [customerId]
+    ).catch(() => ({ rows: [] }));
+
+    // Get location for review link + create the review request record
+    const locResult = await query(
+      'SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]
+    ).catch(() => ({ rows: [] }));
+    const locationId = locResult.rows[0]?.id;
+
+    // Generate a token for the review page
+    const token = require('crypto').randomBytes(16).toString('hex');
+
+    if (locationId) {
+      await query(
+        `INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status)
+         VALUES ($1,$2,$3,$4,$5,'manual',$6,'sent')`,
+        [customerId, locationId, name || null, email.trim(), phone || null, token]
+      ).catch(e => logger.warn('review_requests insert error:', e.message));
+    }
+
+    const reviewLink = 'https://app.swarmreply.com/review/' + token;
+    const brandColor = '#f5c842';
+    const brandLogo  = 'https://swarmreply.com/bee-logo.png';
+    const firstName  = (name || '').trim().split(' ')[0] || 'there';
+
+    const bodyText = 'Hi ' + firstName + ',\n\nThank you for choosing ' + businessName + '! We would love to hear how we did. It only takes a moment.';
+
+    const emailHtml = [
+      '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>',
+      '<body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif">',
+      '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px">',
+      '<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">',
+      '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0">',
+      '<img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain">',
+      '</td></tr>',
+      '<tr><td style="background:#ffffff;padding:36px 32px">',
+      '<h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How did we do, ' + firstName + '?</h2>',
+      '<div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' + bodyText.replace(/\n/g,'<br>') + '</div>',
+      '<div style="text-align:center;margin-bottom:8px">',
+      '<a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Share Your Feedback &rarr;</a>',
+      '</td></tr>',
+      '<tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center">',
+      '<span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span>',
+      '</td></tr>',
+      '</table></td></tr></table></body></html>'
+    ].join('');
+
+    if (!process.env.RESEND_TRANSACTIONAL_KEY && !process.env.RESEND_API_KEY) {
+      return res.status(503).json({ error: 'Email not configured. Add RESEND_TRANSACTIONAL_KEY to Railway.' });
+    }
+
+    const resend = new Resend(process.env.RESEND_TRANSACTIONAL_KEY || process.env.RESEND_API_KEY);
+    const { data: sendData, error: sendError } = await resend.emails.send({
+      from:    process.env.SMTP_FROM || 'SwarmReply <nick@swarmreply.com>',
+      to:      [email.trim()],
+      subject: 'How did we do, ' + firstName + '?',
+      text:    bodyText + '\n\nShare your feedback: ' + reviewLink,
+      html:    emailHtml,
+    });
+
+    if (sendError) {
+      logger.error('Review request send error:', JSON.stringify(sendError));
+      return res.status(502).json({ error: sendError.message || 'Email provider rejected the send' });
+    }
+    if (!sendData?.id) {
+      return res.status(502).json({ error: 'Email was not accepted. Verify swarmreply.com at resend.com/domains' });
+    }
+
+    logger.info('Review request sent to ' + email + ' (id ' + sendData.id + ')');
+    res.json({ success: true, id: sendData.id, reviewLink });
+  } catch (err) {
+    logger.error('review-requests/send error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
 
 // ══════════════════════════════════════════════════════════════════════════════
