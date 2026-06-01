@@ -210,12 +210,14 @@ router.get('/customers/:id', requireAdmin, async (req, res) => {
     ).catch(() => ({ rows: [] }));
 
     const integrations = await query(
-      'SELECT provider, status, created_at FROM integrations WHERE customer_id = $1',
+      `SELECT i.provider, i.status, i.created_at
+         FROM integrations i JOIN locations l ON l.id = i.location_id
+        WHERE l.customer_id = $1`,
       [id]
     ).catch(() => ({ rows: [] }));
 
     const recentEvents = await query(`
-      SELECT event_type as text, created_at as time, metadata as detail
+      SELECT action as text, created_at as time, details as detail
       FROM audit_log WHERE customer_id = $1
       ORDER BY created_at DESC LIMIT 10
     `, [id]).catch(() => ({ rows: [] }));
@@ -345,8 +347,8 @@ router.post('/customers/:id/locations', requireAdmin, async (req, res) => {
     if (!cust.rows.length) return res.status(404).json({ error: 'Customer not found' });
 
     const result = await query(
-      `INSERT INTO locations (customer_id, business_name, platform, is_active)
-       VALUES ($1,$2,$3,true) RETURNING id, business_name, platform`,
+      `INSERT INTO locations (customer_id, business_name, platform, platform_location_id, is_active)
+       VALUES ($1,$2,$3,'manual_' || gen_random_uuid()::text,true) RETURNING id, business_name, platform`,
       [id, businessName, platform]
     );
     await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
@@ -430,7 +432,7 @@ router.delete('/customers/:id', requireAdmin, async (req, res) => {
     await query('DELETE FROM replies WHERE review_id IN (SELECT id FROM reviews WHERE location_id IN (SELECT id FROM locations WHERE customer_id=$1))', [id]).catch(()=>{});
     await query('DELETE FROM reviews WHERE location_id IN (SELECT id FROM locations WHERE customer_id=$1)', [id]).catch(()=>{});
     await query('DELETE FROM locations WHERE customer_id=$1', [id]).catch(()=>{});
-    await query('DELETE FROM integrations WHERE customer_id=$1', [id]).catch(()=>{});
+    await query('DELETE FROM integrations WHERE location_id IN (SELECT id FROM locations WHERE customer_id=$1)', [id]).catch(()=>{});
     await query('DELETE FROM team_members WHERE customer_id=$1', [id]).catch(()=>{});
     await query('DELETE FROM audit_log WHERE customer_id=$1', [id]).catch(()=>{});
     await query('DELETE FROM customers WHERE id=$1', [id]);
