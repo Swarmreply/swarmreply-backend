@@ -307,12 +307,15 @@ const stripeWebhookHandler = async (req, res) => {
 
             // Send welcome email with credentials
             const emailService = require('../services/emailService');
+            const welcomeResetTok = await createPasswordReset(email, 168).catch(() => null); // 7-day setup link
             await emailService.sendWelcomeWithCredentials({
               email,
               name,
               plan: 'starter',
               tempPassword,
-              resetUrl: 'https://app.swarmreply.com/reset-password',
+              resetUrl: welcomeResetTok
+                ? 'https://app.swarmreply.com/reset-password?token=' + welcomeResetTok
+                : 'https://app.swarmreply.com/forgot-password',
               dashUrl:  'https://app.swarmreply.com/dashboard',
             });
 
@@ -567,8 +570,108 @@ router.post('/customers/logout', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── ONBOARDING STATUS ────────────────────────────────────────────────────────
-// GET /api/onboarding/status
+// ════════════════════════════════════════════════════════════════════════════
+// PASSWORD RESET — forgot / verify / reset
+// The frontend (forgot-password.js, reset-password.js) and the Stripe welcome
+// email all reference these; none existed before, so reset was fully broken.
+// Tokens are random; only their SHA-256 hash is stored (password_resets table).
+// ════════════════════════════════════════════════════════════════════════════
+
+// Create a reset token for an email, store its hash, return the raw token.
+async function createPasswordReset(email, hours = 1) {
+  const crypto = require('crypto');
+  const raw  = crypto.randomBytes(32).toString('hex');
+  const hash = crypto.createHash('sha256').update(raw).digest('hex');
+  await query(
+    `INSERT INTO password_resets (email, token_hash, expires_at)
+     VALUES ($1, $2, NOW() + ($3 || ' hours')::interval)`,
+    [email.toLowerCase().trim(), hash, String(hours)]
+  );
+  return raw;
+}
+
+// POST /api/auth/forgot-password  { email }
+// Always returns success (no account enumeration).
+router.post('/auth/forgot-password', async (req, res) => {
+  try {
+    const email = (req.body.email || '').toLowerCase().trim();
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    // Only send if the email belongs to a real account (customer or team member).
+    const acct = await query(
+      `SELECT name FROM customers WHERE LOWER(email)=$1
+       UNION SELECT name FROM team_members WHERE LOWER(email)=$1 LIMIT 1`,
+      [email]
+    ).catch(() => ({ rows: [] }));
+
+    if (acct.rows.length) {
+      const raw = await createPasswordReset(email, 1);
+      const resetUrl = 'https://app.swarmreply.com/reset-password?token=' + raw;
+      const emailService = require('../services/emailService');
+      await emailService.sendPasswordReset({ email, name: acct.rows[0].name, resetUrl }).catch(() => {});
+    }
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('forgot-password error:', err.message);
+    res.json({ success: true }); // never leak failure details
+  }
+});
+
+// GET /api/auth/reset-password/verify?token=  → { valid: bool }
+// Lets the reset page pre-check the link without consuming the token.
+router.get('/auth/reset-password/verify', async (req, res) => {
+  try {
+    const token = req.query.token || '';
+    if (!token) return res.json({ valid: false });
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const r = await query(
+      `SELECT id FROM password_resets
+       WHERE token_hash=$1 AND used_at IS NULL AND expires_at > NOW() LIMIT 1`,
+      [hash]
+    );
+    res.json({ valid: r.rows.length > 0 });
+  } catch (err) {
+    res.json({ valid: false });
+  }
+});
+
+// POST /api/auth/reset-password  { token, password }
+router.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token and password are required' });
+    if (password.length < 8)  return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const r = await query(
+      `SELECT id, email FROM password_resets
+       WHERE token_hash=$1 AND used_at IS NULL AND expires_at > NOW() LIMIT 1`,
+      [hash]
+    );
+    if (!r.rows.length) return res.status(400).json({ error: 'This reset link is invalid or has expired.' });
+
+    const { id: resetId, email } = r.rows[0];
+    const bcrypt = require('bcryptjs');
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Update whichever account(s) hold this email.
+    await query('UPDATE customers SET password_hash=$1, updated_at=NOW() WHERE LOWER(email)=$2', [passwordHash, email]).catch(() => {});
+    await query('UPDATE team_members SET password_hash=$1 WHERE LOWER(email)=$2', [passwordHash, email]).catch(() => {});
+
+    // Single-use
+    await query('UPDATE password_resets SET used_at=NOW() WHERE id=$1', [resetId]);
+
+    logger.info('Password reset completed for ' + email);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('reset-password error:', err.message);
+    res.status(500).json({ error: 'Could not reset password. Please try again.' });
+  }
+});
+
+
 // Returns whether the customer has completed onboarding
 // (has at least one connected location)
 router.get('/onboarding/status', authenticateToken, async (req, res) => {
