@@ -24,15 +24,25 @@ const router  = express.Router();
 const webchatService = require('../services/webchatService');
 const { authenticateToken } = require('../middleware/auth');
 
-// Resolve the location a dashboard request targets (token has customerId, not
-// locationId). Accepts an optional explicit ?locationId / body.locationId for
-// multi-location accounts; falls back to the customer's first active location.
-async function getLocationId(req) {
-  return webchatService.resolveLocationId(
-    req.user.customerId || req.user.id,
-    req.query.locationId || (req.body && req.body.locationId)
-  );
+// The JWT carries customerId but not locationId. This middleware resolves the
+// target location for dashboard requests — an optional, ownership-validated
+// ?locationId / body.locationId override, else the customer's first active
+// location — and attaches it as req.user.locationId so every location-scoped
+// route works. (Public widget routes use widgetLimit and never hit this.)
+async function attachLocationId(req, res, next) {
+  try {
+    req.user.locationId = await webchatService.resolveLocationId(
+      req.user.customerId || req.user.id,
+      req.query.locationId || (req.body && req.body.locationId)
+    );
+  } catch (_) {
+    req.user.locationId = req.user.locationId || null;
+  }
+  next();
 }
+
+// Apply to every authenticated (dashboard) route.
+const requireAuth = [authenticateToken, attachLocationId];
 const logger = require('../utils/logger');
 
 // ── Rate limit specifically for widget public endpoints ───────────────────────
@@ -139,7 +149,7 @@ router.get('/session/:id/stream', widgetLimit, async (req, res) => {
 
 // GET /api/webchat/inbox
 // All sessions for the authenticated location
-router.get('/inbox', authenticateToken, async (req, res) => {
+router.get('/inbox', requireAuth, async (req, res) => {
   try {
     const { status = 'open', limit = 50, offset = 0 } = req.query;
     const sessions = await webchatService.getSessions(
@@ -154,7 +164,7 @@ router.get('/inbox', authenticateToken, async (req, res) => {
 });
 
 // GET /api/webchat/inbox/stats
-router.get('/inbox/stats', authenticateToken, async (req, res) => {
+router.get('/inbox/stats', requireAuth, async (req, res) => {
   try {
     const stats = await webchatService.getInboxStats(req.user.locationId);
     res.json({ success: true, stats });
@@ -165,7 +175,7 @@ router.get('/inbox/stats', authenticateToken, async (req, res) => {
 
 // GET /api/webchat/session/:id
 // Single session with all messages
-router.get('/session/:id', authenticateToken, async (req, res) => {
+router.get('/session/:id', requireAuth, async (req, res) => {
   try {
     const messages = await webchatService.getMessages(
       req.params.id, req.user.locationId
@@ -178,7 +188,7 @@ router.get('/session/:id', authenticateToken, async (req, res) => {
 
 // POST /api/webchat/session/:id/reply
 // Agent sends a reply from the dashboard
-router.post('/session/:id/reply', authenticateToken, async (req, res) => {
+router.post('/session/:id/reply', requireAuth, async (req, res) => {
   try {
     const { body, sendSms } = req.body;
     if (!body?.trim()) return res.status(400).json({ error: 'body required' });
@@ -200,7 +210,7 @@ router.post('/session/:id/reply', authenticateToken, async (req, res) => {
 });
 
 // POST /api/webchat/session/:id/resolve
-router.post('/session/:id/resolve', authenticateToken, async (req, res) => {
+router.post('/session/:id/resolve', requireAuth, async (req, res) => {
   try {
     await webchatService.resolveSession(req.params.id, req.user.locationId);
     res.json({ success: true });
@@ -210,9 +220,9 @@ router.post('/session/:id/resolve', authenticateToken, async (req, res) => {
 });
 
 // GET /api/webchat/settings
-router.get('/settings', authenticateToken, async (req, res) => {
+router.get('/settings', requireAuth, async (req, res) => {
   try {
-    const locationId = await getLocationId(req);
+    const locationId = req.user.locationId;
     if (!locationId) return res.status(400).json({ error: 'No location found. Add a location first.' });
     const config = await webchatService.getConfigForDashboard(locationId);
     res.json({ success: true, config });
@@ -222,9 +232,9 @@ router.get('/settings', authenticateToken, async (req, res) => {
 });
 
 // PUT /api/webchat/settings
-router.put('/settings', authenticateToken, async (req, res) => {
+router.put('/settings', requireAuth, async (req, res) => {
   try {
-    const locationId = await getLocationId(req);
+    const locationId = req.user.locationId;
     if (!locationId) return res.status(400).json({ error: 'No location found.' });
     const config = await webchatService.updateConfig(locationId, req.body);
     res.json({ success: true, config });
@@ -234,9 +244,9 @@ router.put('/settings', authenticateToken, async (req, res) => {
 });
 
 // POST /api/webchat/settings/rotate-token
-router.post('/settings/rotate-token', authenticateToken, async (req, res) => {
+router.post('/settings/rotate-token', requireAuth, async (req, res) => {
   try {
-    const locationId = await getLocationId(req);
+    const locationId = req.user.locationId;
     if (!locationId) return res.status(400).json({ error: 'No location found.' });
     const token = await webchatService.rotateToken(locationId);
     res.json({ success: true, widget_token: token });
@@ -252,9 +262,9 @@ router.post('/settings/rotate-token', authenticateToken, async (req, res) => {
 
 // GET /api/webchat/ai/settings
 // Load AI agent config for the dashboard
-router.get('/ai/settings', authenticateToken, async (req, res) => {
+router.get('/ai/settings', requireAuth, async (req, res) => {
   try {
-    const locationId = await getLocationId(req);
+    const locationId = req.user.locationId;
     if (!locationId) return res.status(400).json({ error: 'No location found.' });
     const config = await webchatService.getAIConfig(locationId);
     res.json({ success: true, config: config || {} });
@@ -265,9 +275,9 @@ router.get('/ai/settings', authenticateToken, async (req, res) => {
 
 // PUT /api/webchat/ai/settings
 // Save AI agent settings
-router.put('/ai/settings', authenticateToken, async (req, res) => {
+router.put('/ai/settings', requireAuth, async (req, res) => {
   try {
-    const locationId = await getLocationId(req);
+    const locationId = req.user.locationId;
     if (!locationId) return res.status(400).json({ error: 'No location found.' });
     const config = await webchatService.updateAIConfig(locationId, req.body);
     res.json({ success: true, config });
@@ -278,7 +288,7 @@ router.put('/ai/settings', authenticateToken, async (req, res) => {
 
 // GET /api/webchat/ai/handoffs
 // Handoff log — what the AI couldn't handle
-router.get('/ai/handoffs', authenticateToken, async (req, res) => {
+router.get('/ai/handoffs', requireAuth, async (req, res) => {
   try {
     const { limit = 20 } = req.query;
     const handoffs = await webchatService.getHandoffLog(
@@ -292,7 +302,7 @@ router.get('/ai/handoffs', authenticateToken, async (req, res) => {
 
 // POST /api/webchat/ai/test
 // Test the AI agent with a sample message — returns reply without storing
-router.post('/ai/test', authenticateToken, async (req, res) => {
+router.post('/ai/test', requireAuth, async (req, res) => {
   try {
     const { message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: 'message required' });
@@ -319,7 +329,7 @@ router.post('/ai/test', authenticateToken, async (req, res) => {
 
 // GET /api/webchat/ai/templates
 // List all available industry templates for the picker UI
-router.get('/ai/templates', authenticateToken, (req, res) => {
+router.get('/ai/templates', requireAuth, (req, res) => {
   const industryTemplates = require('../services/industryTemplates');
   res.json({ success: true, templates: industryTemplates.getTemplateList() });
 });
@@ -327,7 +337,7 @@ router.get('/ai/templates', authenticateToken, (req, res) => {
 // POST /api/webchat/ai/templates/apply
 // Apply an industry template to this location's AI config
 // Only fills in fields the owner hasn't already customised
-router.post('/ai/templates/apply', authenticateToken, async (req, res) => {
+router.post('/ai/templates/apply', requireAuth, async (req, res) => {
   try {
     const { industryKey, overwrite = false } = req.body;
     if (!industryKey) return res.status(400).json({ error: 'industryKey required' });
@@ -411,7 +421,7 @@ router.post('/ai/templates/apply', authenticateToken, async (req, res) => {
 
 // GET /api/webchat/ai/templates/:key/preview
 // Preview a template before applying — returns the full template content
-router.get('/ai/templates/:key/preview', authenticateToken, async (req, res) => {
+router.get('/ai/templates/:key/preview', requireAuth, async (req, res) => {
   try {
     const industryTemplates = require('../services/industryTemplates');
     const { query } = require('../database/db');
