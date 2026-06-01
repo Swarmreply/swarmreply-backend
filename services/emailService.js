@@ -329,9 +329,37 @@ async function sendWelcomeWithCredentials({ email, name, plan, tempPassword, res
   }
 }
 
+async function sendPasswordReset({ email, name, resetUrl }) {
+  const firstName = (name || '').trim().split(' ')[0] || 'there';
+  try {
+    await getResend().emails.send({
+      from:    process.env.EMAIL_FROM || 'hello@swarmreply.com',
+      to:      email,
+      subject: 'Reset your SwarmReply password',
+      html: [
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>',
+        '<body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif">',
+        '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px">',
+        '<table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;background:#fff;border-radius:12px;overflow:hidden">',
+        '<tr><td style="background:#f5c842;padding:18px 28px"><strong style="font-size:18px;color:#0a0a0a">SwarmReply</strong></td></tr>',
+        '<tr><td style="padding:32px 28px">',
+        '<h2 style="margin:0 0 14px;font-size:1.2rem;color:#0a0a0a">Reset your password</h2>',
+        '<p style="font-size:.9rem;line-height:1.7;color:#3a3a38;margin:0 0 24px">Hi ' + firstName + ', we received a request to reset your password. This link expires in 1 hour. If you did not request it, you can safely ignore this email.</p>',
+        '<div style="text-align:center;margin-bottom:8px">',
+        '<a href="' + resetUrl + '" style="display:inline-block;background:#0a0a0a;color:#fff;text-decoration:none;padding:13px 30px;border-radius:50px;font-weight:700;font-size:.9rem">Reset password</a>',
+        '</div></td></tr></table></td></tr></table></body></html>'
+      ].join(''),
+    });
+    return { sent: true };
+  } catch (err) {
+    return { sent: false, error: err.message };
+  }
+}
+
 module.exports = {
   sendWeeklyDigest,
   sendWelcomeEmail,
   sendWelcomeWithCredentials,
-  sendConnectionErrorAlert
+  sendConnectionErrorAlert,
+  sendPasswordReset
 };
