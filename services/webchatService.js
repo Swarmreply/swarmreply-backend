@@ -572,17 +572,27 @@ async function updateAIConfig(locationId, updates) {
   const fields = Object.keys(updates).filter(k => allowed.includes(k));
   if (!fields.length) throw new Error('No valid fields');
 
+  // Ensure the parent webchat_configs row exists (auto-creates if missing),
+  // then ensure an ai_config row exists for it — no row had ever been created,
+  // so the previous UPDATE-only path silently saved nothing.
+  const cfg = await getConfigForDashboard(locationId);
+  const configId = cfg.id;
+
+  const existing = await query(
+    'SELECT id FROM webchat_ai_configs WHERE config_id = $1',
+    [configId]
+  );
+  if (!existing.rows[0]) {
+    await query('INSERT INTO webchat_ai_configs (config_id) VALUES ($1)', [configId]);
+  }
+
   const setClause = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
   const values    = fields.map(f => updates[f]);
 
   const result = await query(
-    `UPDATE webchat_ai_configs wac
-     SET ${setClause}
-     FROM webchat_configs wc
-     WHERE wac.config_id = wc.id
-       AND wc.location_id = $1
-     RETURNING wac.*`,
-    [locationId, ...values]
+    `UPDATE webchat_ai_configs SET ${setClause}
+     WHERE config_id = $1 RETURNING *`,
+    [configId, ...values]
   );
   return result.rows[0];
 }
@@ -601,11 +611,33 @@ async function getHandoffLog(locationId, limit = 20) {
   return result.rows;
 }
 
+// Resolve which location a dashboard request applies to.
+// The JWT carries customerId but not locationId, so derive it: prefer an
+// explicit (ownership-validated) request, else the customer's first active location.
+async function resolveLocationId(customerId, requestedId) {
+  if (!customerId) return null;
+  if (requestedId) {
+    const r = await query(
+      'SELECT id FROM locations WHERE id = $1 AND customer_id = $2',
+      [requestedId, customerId]
+    );
+    if (r.rows[0]) return r.rows[0].id;
+  }
+  const r = await query(
+    `SELECT id FROM locations
+     WHERE customer_id = $1 AND is_active = true
+     ORDER BY created_at ASC LIMIT 1`,
+    [customerId]
+  );
+  return r.rows[0]?.id || null;
+}
+
 module.exports = {
   getConfig, getConfigForDashboard, updateConfig, rotateToken,
   startSession, getSessions, getMessages, sendMessage,
   receiveVisitorMessage, resolveSession,
   addSseClient, broadcastToSession,
   getInboxStats,
-  getAIConfig, updateAIConfig, getHandoffLog
+  getAIConfig, updateAIConfig, getHandoffLog,
+  resolveLocationId
 };
