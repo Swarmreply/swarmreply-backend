@@ -234,6 +234,51 @@ router.get('/stats', authenticateToken, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// ACCOUNT — business details + notification preferences (Settings → Account)
+// ════════════════════════════════════════════════════════════════════════════
+router.get('/account', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const r = await query('SELECT name, email, notification_prefs FROM customers WHERE id=$1', [customerId]);
+    const row = r.rows[0] || {};
+    res.json({
+      name: row.name || '',
+      email: row.email || '',
+      notificationPrefs: row.notification_prefs || { negative: true, all_reviews: false, weekly_digest: true },
+    });
+  } catch (err) {
+    logger.error('GET /account error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/account', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { name, email, notificationPrefs } = req.body || {};
+
+    if (email !== undefined && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const sets = [], params = [];
+    let i = 1;
+    if (name !== undefined)             { sets.push(`name=$${i++}`);               params.push(name); }
+    if (email !== undefined)            { sets.push(`email=$${i++}`);              params.push(email.toLowerCase().trim()); }
+    if (notificationPrefs !== undefined){ sets.push(`notification_prefs=$${i++}`); params.push(JSON.stringify(notificationPrefs)); }
+    if (!sets.length) return res.json({ success: true });
+
+    params.push(customerId);
+    await query(`UPDATE customers SET ${sets.join(', ')}, updated_at=NOW() WHERE id=$${i}`, params);
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'That email is already in use by another account.' });
+    logger.error('PUT /account error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // PULSE — analytics hub. One call returns real aggregates over the customer's
 // reviews / replies / review_requests / survey_responses / campaigns / llm_reports.
 // Headline stats respect ?range= (7d/30d/90d/12m); trend charts use natural
