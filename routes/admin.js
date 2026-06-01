@@ -31,22 +31,38 @@ function requireAdmin(req, res, next) {
 
 // ── ADMIN LOGIN ───────────────────────────────
 // POST /api/admin/login
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'nickswarmreply@gmail.com';
-  const ADMIN_PASS  = process.env.ADMIN_PASSWORD || 'Sadienova0711';
+// Credentials MUST come from env (ADMIN_EMAIL / ADMIN_PASSWORD). No fallbacks —
+// fail closed if unset so a secret is never baked into source.
+const crypto = require('crypto');
+function safeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
 
-  if (email !== ADMIN_EMAIL || password !== ADMIN_PASS) {
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body || {};
+  const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+  const ADMIN_PASS  = process.env.ADMIN_PASSWORD;
+
+  if (!ADMIN_EMAIL || !ADMIN_PASS) {
+    logger.error('Admin login attempted but ADMIN_EMAIL/ADMIN_PASSWORD are not configured');
+    return res.status(500).json({ error: 'Admin login is not configured' });
+  }
+
+  const emailOk = typeof email === 'string' && email.toLowerCase().trim() === ADMIN_EMAIL.toLowerCase().trim();
+  const passOk  = typeof password === 'string' && safeEqual(password, ADMIN_PASS);
+  if (!emailOk || !passOk) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
   const token = jwt.sign(
-    { email, role: 'superadmin' },
+    { email: ADMIN_EMAIL, role: 'superadmin' },
     process.env.JWT_SECRET,
     { expiresIn: '12h' }
   );
 
-  logger.info(`Admin login: ${email}`);
+  logger.info(`Admin login: ${ADMIN_EMAIL}`);
   res.json({ token });
 });
 
