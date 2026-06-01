@@ -23,6 +23,16 @@ const express = require('express');
 const router  = express.Router();
 const webchatService = require('../services/webchatService');
 const { authenticateToken } = require('../middleware/auth');
+
+// Resolve the location a dashboard request targets (token has customerId, not
+// locationId). Accepts an optional explicit ?locationId / body.locationId for
+// multi-location accounts; falls back to the customer's first active location.
+async function getLocationId(req) {
+  return webchatService.resolveLocationId(
+    req.user.customerId || req.user.id,
+    req.query.locationId || (req.body && req.body.locationId)
+  );
+}
 const logger = require('../utils/logger');
 
 // ── Rate limit specifically for widget public endpoints ───────────────────────
@@ -202,7 +212,9 @@ router.post('/session/:id/resolve', authenticateToken, async (req, res) => {
 // GET /api/webchat/settings
 router.get('/settings', authenticateToken, async (req, res) => {
   try {
-    const config = await webchatService.getConfigForDashboard(req.user.locationId);
+    const locationId = await getLocationId(req);
+    if (!locationId) return res.status(400).json({ error: 'No location found. Add a location first.' });
+    const config = await webchatService.getConfigForDashboard(locationId);
     res.json({ success: true, config });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -212,7 +224,9 @@ router.get('/settings', authenticateToken, async (req, res) => {
 // PUT /api/webchat/settings
 router.put('/settings', authenticateToken, async (req, res) => {
   try {
-    const config = await webchatService.updateConfig(req.user.locationId, req.body);
+    const locationId = await getLocationId(req);
+    if (!locationId) return res.status(400).json({ error: 'No location found.' });
+    const config = await webchatService.updateConfig(locationId, req.body);
     res.json({ success: true, config });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -222,7 +236,9 @@ router.put('/settings', authenticateToken, async (req, res) => {
 // POST /api/webchat/settings/rotate-token
 router.post('/settings/rotate-token', authenticateToken, async (req, res) => {
   try {
-    const token = await webchatService.rotateToken(req.user.locationId);
+    const locationId = await getLocationId(req);
+    if (!locationId) return res.status(400).json({ error: 'No location found.' });
+    const token = await webchatService.rotateToken(locationId);
     res.json({ success: true, widget_token: token });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -238,7 +254,9 @@ router.post('/settings/rotate-token', authenticateToken, async (req, res) => {
 // Load AI agent config for the dashboard
 router.get('/ai/settings', authenticateToken, async (req, res) => {
   try {
-    const config = await webchatService.getAIConfig(req.user.locationId);
+    const locationId = await getLocationId(req);
+    if (!locationId) return res.status(400).json({ error: 'No location found.' });
+    const config = await webchatService.getAIConfig(locationId);
     res.json({ success: true, config: config || {} });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -249,7 +267,9 @@ router.get('/ai/settings', authenticateToken, async (req, res) => {
 // Save AI agent settings
 router.put('/ai/settings', authenticateToken, async (req, res) => {
   try {
-    const config = await webchatService.updateAIConfig(req.user.locationId, req.body);
+    const locationId = await getLocationId(req);
+    if (!locationId) return res.status(400).json({ error: 'No location found.' });
+    const config = await webchatService.updateAIConfig(locationId, req.body);
     res.json({ success: true, config });
   } catch (err) {
     res.status(400).json({ error: err.message });

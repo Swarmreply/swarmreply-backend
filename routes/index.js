@@ -81,7 +81,7 @@ router.get('/locations', authenticateToken, async (req, res) => {
   try {
     const result = await query(
       `SELECT id, business_name, business_type, platform, tone,
-              always_include, never_include, contact_email,
+              always_include, never_include, contact_email, auto_reply,
               is_active, last_synced_at, created_at
        FROM locations
        WHERE customer_id = $1
@@ -132,7 +132,7 @@ router.post('/locations', authenticateToken, async (req, res) => {
 // Update location tone and keyword settings
 router.put('/locations/:id/settings', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { tone, alwaysInclude, neverInclude, customInstructions, contactEmail } = req.body;
+  const { tone, alwaysInclude, neverInclude, customInstructions, contactEmail, autoReply } = req.body;
 
   try {
     await query(
@@ -142,9 +142,10 @@ router.put('/locations/:id/settings', authenticateToken, async (req, res) => {
            never_include = COALESCE($3, never_include),
            custom_instructions = COALESCE($4, custom_instructions),
            contact_email = COALESCE($5, contact_email),
+           auto_reply = COALESCE($6, auto_reply),
            updated_at = NOW()
-       WHERE id = $6`,
-      [tone, alwaysInclude, neverInclude, customInstructions, contactEmail, id]
+       WHERE id = $7`,
+      [tone, alwaysInclude, neverInclude, customInstructions, contactEmail, autoReply, id]
     );
 
     res.json({ success: true });
