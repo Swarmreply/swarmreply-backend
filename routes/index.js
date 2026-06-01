@@ -786,23 +786,39 @@ router.post('/auth/forgot-password', async (req, res) => {
     const email = (req.body.email || '').toLowerCase().trim();
     if (!email) return res.status(400).json({ error: 'Email is required' });
 
+    // Account-INDEPENDENT infra check: confirm the password_resets table exists.
+    // Runs for every request regardless of whether the account exists, so a
+    // failure here can't be used to enumerate accounts. If the migration wasn't
+    // run, this throws → outer catch → 500 (a clear signal, not a silent success).
+    await query('SELECT 1 FROM password_resets LIMIT 1');
+
     // Only send if the email belongs to a real account (customer or team member).
     const acct = await query(
       `SELECT name FROM customers WHERE LOWER(email)=$1
        UNION SELECT name FROM team_members WHERE LOWER(email)=$1 LIMIT 1`,
       [email]
-    ).catch(() => ({ rows: [] }));
+    );
 
     if (acct.rows.length) {
       const raw = await createPasswordReset(email, 1);
       const resetUrl = 'https://app.swarmreply.com/reset-password?token=' + raw;
       const emailService = require('../services/emailService');
-      await emailService.sendPasswordReset({ email, name: acct.rows[0].name, resetUrl }).catch(() => {});
+      const result = await emailService.sendPasswordReset({ email, name: acct.rows[0].name, resetUrl });
+      if (!result || result.sent === false) {
+        // Email provider failed (e.g. RESEND_API_KEY/EMAIL_FROM not set, domain
+        // unverified). Surface as a server error so the user can retry rather
+        // than being told to check an inbox that will never receive anything.
+        logger.error('forgot-password: email send FAILED for ' + email + ' — ' + (result && result.error));
+        return res.status(500).json({ error: 'Could not send the reset email. Please try again shortly.' });
+      }
+      logger.info('forgot-password: reset email sent to ' + email);
+    } else {
+      logger.info('forgot-password: no account found for ' + email + ' (no email sent)');
     }
     res.json({ success: true });
   } catch (err) {
-    logger.error('forgot-password error:', err.message);
-    res.json({ success: true }); // never leak failure details
+    logger.error('forgot-password error: ' + err.message);
+    res.status(500).json({ error: 'Could not process the request. Please try again.' });
   }
 });
 
