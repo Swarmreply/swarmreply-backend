@@ -353,6 +353,7 @@ router.post('/customers/:id/locations', requireAdmin, async (req, res) => {
       [id, 'admin_add_location', JSON.stringify({ admin: req.admin.email, business_name: businessName })]).catch(() => {});
     res.json({ success: true, location: result.rows[0] });
   } catch (err) {
+    logger.error('admin add-location failed: ' + err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -374,23 +375,40 @@ router.post('/customers/:id/users', requireAdmin, async (req, res) => {
     const cust = await query('SELECT id FROM customers WHERE id=$1', [id]);
     if (!cust.rows.length) return res.status(404).json({ error: 'Customer not found' });
 
+    // Reject duplicates with a clear message (mirrors the team-invite flow).
+    const dupe = await query(
+      'SELECT id FROM team_members WHERE customer_id=$1 AND LOWER(email)=$2',
+      [id, email]
+    ).catch(() => ({ rows: [] }));
+    if (dupe.rows.length) return res.status(409).json({ error: 'A user with that email already exists for this customer.' });
+
     const bcrypt = require('bcryptjs');
     const crypto = require('crypto');
     const tempPass    = crypto.randomBytes(8).toString('hex');
     const hash        = await bcrypt.hash(tempPass, 12);
     const inviteToken = crypto.randomBytes(16).toString('hex');
 
+    // Insert using the EXACT column set the live team-invite flow uses (proven to
+    // match the table), then set the password + activate as best-effort follow-ups
+    // so a status CHECK constraint can never block account creation.
     const result = await query(
       `INSERT INTO team_members
-         (customer_id, email, name, role, password_hash, invite_token, invite_sent_at, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,NOW(),'active',$7) RETURNING id`,
-      [id, email, name, role, hash, inviteToken, req.admin.email]
+         (customer_id, email, name, role, invite_token, invite_sent_at, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,NOW(),'invited',$6) RETURNING id`,
+      [id, email, name, role, inviteToken, req.admin.email]
     );
+    const newId = result.rows[0].id;
+    await query('UPDATE team_members SET password_hash=$1 WHERE id=$2', [hash, newId])
+      .catch(e => logger.error('add-user set password failed: ' + e.message));
+    await query("UPDATE team_members SET status='active' WHERE id=$1", [newId])
+      .catch(e => logger.error('add-user activate failed (left as invited): ' + e.message));
+
     await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
       [id, 'admin_add_user', JSON.stringify({ admin: req.admin.email, email, role })]).catch(() => {});
-    res.json({ success: true, id: result.rows[0].id, tempPassword: tempPass });
+    res.json({ success: true, id: newId, tempPassword: tempPass });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'A user with that email already exists for this customer.' });
+    logger.error('admin add-user failed: ' + err.message);
     res.status(500).json({ error: err.message });
   }
 });
