@@ -72,6 +72,21 @@ async function getStripeSubscription(subscriptionId) {
   }
 }
 
+// Shared: create a Stripe billing portal session for a customer.
+// Single source of truth for both GET and POST /portal (called from the billing
+// page and from the settings/lockout flows respectively, with different returns).
+async function createPortalSession(customerId, returnPath) {
+  const customer = await getCustomerRecord(customerId);
+  if (!customer?.stripe_customer_id) {
+    return { error: 'No billing account found. Please contact hello@swarmreply.com' };
+  }
+  const session = await stripe.billingPortal.sessions.create({
+    customer:   customer.stripe_customer_id,
+    return_url: `${process.env.FRONTEND_URL}${returnPath}`,
+  });
+  return { url: session.url };
+}
+
 // ── ROUTES ────────────────────────────────────────────────────────────────────
 
 // GET /api/billing/status
@@ -196,87 +211,26 @@ router.get('/invoices', authenticateToken, async (req, res) => {
 // Generate a Stripe Customer Portal URL — handles card updates, invoice history, cancellation
 router.get('/portal', authenticateToken, async (req, res) => {
   try {
-    const customer = await getCustomerRecord(req.user.customerId);
-    if (!customer?.stripe_customer_id) {
-      return res.status(400).json({ error: 'No billing account found. Please contact hello@swarmreply.com' });
-    }
-
-    const session = await stripe.billingPortal.sessions.create({
-      customer:   customer.stripe_customer_id,
-      return_url: `${process.env.FRONTEND_URL}/dashboard/billing`
-    });
-
-    res.json({ success: true, url: session.url });
+    const r = await createPortalSession(req.user.customerId, '/dashboard/billing');
+    if (r.error) return res.status(400).json({ error: r.error });
+    res.json({ success: true, url: r.url });
   } catch (err) {
     logger.error('Portal error:', err.message);
     res.status(500).json({ error: 'Failed to open billing portal' });
   }
 });
 
-// POST /api/billing/upgrade
-// Switch to a different plan immediately
-// Stripe prorates the charge automatically
+// POST /api/billing/upgrade  — DEPRECATED
+// Tier-based plan switching was replaced by per-location pricing (a single base
+// plan + a DB-driven location add-on quantity, see services/locationBilling.js).
+// There is no longer a "plan" to switch to. Adding/removing locations adjusts the
+// bill automatically; payment-method changes go through the Stripe billing portal.
+// Returns 410 so any stale caller fails loudly instead of charging an old tier price.
 router.post('/upgrade', authenticateToken, async (req, res) => {
-  try {
-    const { planId } = req.body;
-    const newPlan = PLANS[planId];
-    if (!newPlan?.priceId) {
-      return res.status(400).json({ error: 'Invalid plan' });
-    }
-
-    const customer = await getCustomerRecord(req.user.customerId);
-    if (!customer) return res.status(404).json({ error: 'Customer not found' });
-
-    if (customer.plan === planId) {
-      return res.status(400).json({ error: 'Already on this plan' });
-    }
-
-    if (!customer.stripe_subscription_id) {
-      return res.status(400).json({ error: 'No active subscription found' });
-    }
-
-    // Agency upgrades go to sales — not self-serve
-    if (planId === 'agency') {
-      return res.status(400).json({
-        error: 'Agency plan requires a sales conversation. Contact hello@swarmreply.com'
-      });
-    }
-
-    // Fetch current subscription to get the subscription item ID
-    const sub = await stripe.subscriptions.retrieve(customer.stripe_subscription_id);
-    const itemId = sub.items.data[0]?.id;
-
-    if (!itemId) {
-      return res.status(400).json({ error: 'Could not find subscription item' });
-    }
-
-    // Update subscription — Stripe prorates automatically
-    const updated = await stripe.subscriptions.update(customer.stripe_subscription_id, {
-      items: [{ id: itemId, price: newPlan.priceId }],
-      proration_behavior: 'create_prorations',  // immediate proration
-      billing_cycle_anchor: 'unchanged'          // keep same billing date
-    });
-
-    // Update our DB immediately — webhook will also fire
-    await query(
-      `UPDATE customers
-       SET plan = $1, stripe_price_id = $2, updated_at = NOW()
-       WHERE id = $3`,
-      [planId, newPlan.priceId, customer.id]
-    );
-
-    logger.info(`Plan changed: ${customer.email} ${customer.plan} → ${planId}`);
-
-    res.json({
-      success: true,
-      message: `Plan updated to ${newPlan.name}`,
-      plan:    planId,
-      newPricePerMonth: newPlan.price
-    });
-  } catch (err) {
-    logger.error('Plan upgrade error:', err.message);
-    res.status(500).json({ error: err.message || 'Failed to update plan' });
-  }
+  res.status(410).json({
+    error: 'Plan upgrades are no longer used. Pricing is per location and updates automatically when you add or remove locations.',
+    deprecated: true
+  });
 });
 
 // POST /api/billing/cancel
@@ -460,25 +414,11 @@ router.get('/health', authenticateToken, async (req, res) => {
 // Creates a Stripe billing portal session for card updates
 router.post('/portal', authenticateToken, async (req, res) => {
   try {
-    const result = await query(
-      'SELECT stripe_customer_id FROM customers WHERE id = $1',
-      [req.user.customerId]
-    );
-
-    const stripeCustomerId = result.rows[0]?.stripe_customer_id;
-    if (!stripeCustomerId) {
-      return res.status(400).json({ error: 'No billing account found.' });
-    }
-
-    const stripe  = require('stripe')(process.env.STRIPE_SECRET_KEY);
-    const session = await stripe.billingPortal.sessions.create({
-      customer:   stripeCustomerId,
-      return_url: `${process.env.FRONTEND_URL}/dashboard/settings?tab=billing`,
-    });
-
-    res.json({ success: true, url: session.url });
+    const r = await createPortalSession(req.user.customerId, '/dashboard/settings?tab=billing');
+    if (r.error) return res.status(400).json({ error: r.error });
+    res.json({ success: true, url: r.url });
   } catch (err) {
-    logger.error('Billing portal error:', err);
+    logger.error('Billing portal error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
