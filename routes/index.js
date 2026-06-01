@@ -257,7 +257,7 @@ router.put('/account', authenticateToken, async (req, res) => {
     const customerId = req.user.customerId || req.user.id;
     const { name, email, notificationPrefs } = req.body || {};
 
-    if (email !== undefined && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    if (email !== undefined && !/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(email)) {
       return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
 

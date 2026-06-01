@@ -297,7 +297,17 @@ router.patch('/customers/:id/flag', requireAdmin, async (req, res) => {
 // POST /api/admin/customers
 router.post('/customers', requireAdmin, async (req, res) => {
   try {
-    const { name, email, plan, type, is_demo } = req.body;
+    const name  = (req.body.name || '').trim();
+    const email = (req.body.email || '').trim().toLowerCase();
+    const { plan, type, is_demo } = req.body;
+
+    // Reject malformed emails (commas, spaces, missing TLD, etc.) so a typo can't
+    // create an unreachable account that can never log in or reset its password.
+    if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (!name) return res.status(400).json({ error: 'Name is required.' });
+
     const bcrypt = require('bcryptjs');
     const crypto = require('crypto');
     const tempPass = crypto.randomBytes(8).toString('hex');
@@ -317,6 +327,70 @@ router.post('/customers', requireAdmin, async (req, res) => {
 
     res.json({ success: true, id: result.rows[0].id, tempPassword: tempPass });
   } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A customer with that email already exists.' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── ADD LOCATION TO A CUSTOMER ────────────────
+// POST /api/admin/customers/:id/locations
+router.post('/customers/:id/locations', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const businessName = (req.body.business_name || req.body.name || '').trim();
+    const platform     = (req.body.platform || 'google').trim();
+    if (!businessName) return res.status(400).json({ error: 'Business name is required.' });
+
+    const cust = await query('SELECT id FROM customers WHERE id=$1', [id]);
+    if (!cust.rows.length) return res.status(404).json({ error: 'Customer not found' });
+
+    const result = await query(
+      `INSERT INTO locations (customer_id, business_name, platform, is_active)
+       VALUES ($1,$2,$3,true) RETURNING id, business_name, platform`,
+      [id, businessName, platform]
+    );
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [id, 'admin_add_location', JSON.stringify({ admin: req.admin.email, business_name: businessName })]).catch(() => {});
+    res.json({ success: true, location: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── ADD USER (TEAM MEMBER) TO A CUSTOMER ──────
+// POST /api/admin/customers/:id/users
+router.post('/customers/:id/users', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const name  = (req.body.name || '').trim();
+    const email = (req.body.email || '').trim().toLowerCase();
+    const role  = ['admin', 'manager', 'staff'].includes(req.body.role) ? req.body.role : 'staff';
+
+    if (!/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (!name) return res.status(400).json({ error: 'Name is required.' });
+
+    const cust = await query('SELECT id FROM customers WHERE id=$1', [id]);
+    if (!cust.rows.length) return res.status(404).json({ error: 'Customer not found' });
+
+    const bcrypt = require('bcryptjs');
+    const crypto = require('crypto');
+    const tempPass    = crypto.randomBytes(8).toString('hex');
+    const hash        = await bcrypt.hash(tempPass, 12);
+    const inviteToken = crypto.randomBytes(16).toString('hex');
+
+    const result = await query(
+      `INSERT INTO team_members
+         (customer_id, email, name, role, password_hash, invite_token, invite_sent_at, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,NOW(),'active',$7) RETURNING id`,
+      [id, email, name, role, hash, inviteToken, req.admin.email]
+    );
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [id, 'admin_add_user', JSON.stringify({ admin: req.admin.email, email, role })]).catch(() => {});
+    res.json({ success: true, id: result.rows[0].id, tempPassword: tempPass });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A user with that email already exists for this customer.' });
     res.status(500).json({ error: err.message });
   }
 });
