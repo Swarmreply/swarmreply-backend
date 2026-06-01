@@ -1408,6 +1408,198 @@ router.post('/review/:token/submit', async (req, res) => {
 
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// SURVEY (NPS) DASHBOARD — live routes over the REAL tables (review_requests /
+// survey_responses / review_templates). The legacy surveys.js / nps.js routers
+// were unmounted dead code on a different data model (survey_sends/survey_configs).
+// Config is stored in review_templates.config — the same row the public
+// /review/:token page reads — with camelCase keys derived on save so dashboard
+// edits actually change the live customer survey.
+// ════════════════════════════════════════════════════════════════════════════
+
+const SURVEY_CONFIG_DEFAULTS = {
+  is_enabled: true,
+  question_text: 'How likely are you to recommend us to a friend or family member?',
+  scale_type: '0-10',
+  low_label: 'Not likely', high_label: 'Very likely',
+  promoter_min: 9, passive_min: 7,
+  promoter_message: "We're so glad you had a great experience! Would you mind sharing it online?",
+  promoter_url: '',
+  passive_message: 'Thank you for your feedback!',
+  detractor_message: "We're sorry your experience didn't meet expectations.",
+  followup_enabled: true,
+  followup_question: 'What could we do better?',
+  thank_you_title: 'Thank you!',
+  thank_you_message: 'We appreciate your feedback.',
+  button_text: 'Share Your Feedback →',
+  email_subject: 'How did we do?',
+  sms_body: 'How was your experience? Tap to let us know:',
+  send_channel: 'email',
+  send_delay_hours: 0,
+  brand_color: '#f5c842',
+};
+
+// Validate a location belongs to the authenticated customer.
+async function surveyLocation(locId, customerId) {
+  const r = await query(
+    'SELECT id, business_name FROM locations WHERE id=$1 AND customer_id=$2',
+    [locId, customerId]
+  ).catch(() => ({ rows: [] }));
+  return r.rows[0] || null;
+}
+
+function npsLabel(score, promoterMin = 9, passiveMin = 7) {
+  if (score == null) return null;
+  if (score >= promoterMin) return 'Promoter';
+  if (score >= passiveMin)  return 'Passive';
+  return 'Detractor';
+}
+
+// GET /api/surveys/:locId/config
+router.get('/surveys/:locId/config', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const loc = await surveyLocation(req.params.locId, customerId);
+    if (!loc) return res.status(404).json({ error: 'Location not found' });
+    const r = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
+    res.json({ config: { ...SURVEY_CONFIG_DEFAULTS, ...(r.rows[0]?.config || {}) } });
+  } catch (err) {
+    logger.error('GET /surveys/:locId/config error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/surveys/:locId/config
+router.put('/surveys/:locId/config', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const loc = await surveyLocation(req.params.locId, customerId);
+    if (!loc) return res.status(404).json({ error: 'Location not found' });
+
+    const incoming = req.body || {};
+    const existingRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
+    const existing = existingRes.rows[0]?.config || {};
+
+    // Keep existing keys (platforms, detractorQ2, brandLogo…), apply the dashboard's
+    // snake_case fields, then derive the camelCase keys the public /review/:token
+    // reader consumes so edits take effect on the live survey.
+    const merged = {
+      ...existing,
+      ...incoming,
+      promoterMin:      incoming.promoter_min      ?? existing.promoterMin,
+      neutralMin:       incoming.passive_min       ?? existing.neutralMin,
+      npsQuestion:      incoming.question_text     ?? existing.npsQuestion,
+      promoterMessage:  incoming.promoter_message  ?? existing.promoterMessage,
+      neutralQuestion:  incoming.passive_message   ?? existing.neutralQuestion,
+      detractorOpening: incoming.detractor_message ?? existing.detractorOpening,
+      detractorQ1:      incoming.followup_question ?? existing.detractorQ1,
+      brandColor:       incoming.brand_color       ?? existing.brandColor,
+      buttonText:       incoming.button_text       ?? existing.buttonText,
+    };
+
+    await query(
+      `INSERT INTO review_templates (customer_id, config, updated_at)
+       VALUES ($1,$2,NOW())
+       ON CONFLICT (customer_id) DO UPDATE SET config=$2, updated_at=NOW()`,
+      [customerId, JSON.stringify(merged)]
+    );
+    res.json({ config: { ...SURVEY_CONFIG_DEFAULTS, ...merged } });
+  } catch (err) {
+    logger.error('PUT /surveys/:locId/config error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/surveys/:locId/analytics
+router.get('/surveys/:locId/analytics', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const loc = await surveyLocation(req.params.locId, customerId);
+    if (!loc) return res.status(404).json({ error: 'Location not found' });
+
+    const cfgRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
+    const cfg = { ...SURVEY_CONFIG_DEFAULTS, ...(cfgRes.rows[0]?.config || {}) };
+
+    const rowsRes = await query(
+      `SELECT sr.nps_score, sr.path, sr.left_review, sr.detractor_q1, sr.detractor_q2,
+              sr.completed_at, rr.contact_name
+       FROM survey_responses sr
+       LEFT JOIN review_requests rr ON rr.id = sr.review_request_id
+       WHERE sr.location_id = $1
+       ORDER BY sr.completed_at DESC`,
+      [req.params.locId]
+    ).catch(() => ({ rows: [] }));
+
+    const responses = rowsRes.rows.map(r => {
+      const label = npsLabel(r.nps_score, cfg.promoter_min, cfg.passive_min);
+      const followup = [r.detractor_q1, r.detractor_q2].filter(Boolean).join(' — ') || null;
+      return {
+        score: r.nps_score,
+        score_label: label,
+        contact_name: r.contact_name || 'Anonymous',
+        responded_at: r.completed_at,
+        followup_text: followup,
+        action: r.left_review ? 'Left a public review' : (label === 'Detractor' ? 'Private feedback' : 'Completed'),
+      };
+    });
+    const feedback = responses.filter(r => r.score_label === 'Detractor' && r.followup_text);
+
+    const total = responses.length;
+    const promoters  = responses.filter(r => r.score_label === 'Promoter').length;
+    const passives   = responses.filter(r => r.score_label === 'Passive').length;
+    const detractors = responses.filter(r => r.score_label === 'Detractor').length;
+    const avgScore = total ? +(responses.reduce((s, r) => s + (r.score || 0), 0) / total).toFixed(1) : 0;
+    const nps = total ? Math.round(((promoters - detractors) / total) * 100) : 0;
+
+    res.json({ responses, feedback, total, promoters, passives, detractors, avgScore, nps });
+  } catch (err) {
+    logger.error('GET /surveys/:locId/analytics error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/surveys/:locId/history
+router.get('/surveys/:locId/history', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const loc = await surveyLocation(req.params.locId, customerId);
+    if (!loc) return res.status(404).json({ error: 'Location not found' });
+
+    const cfgRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
+    const cfg = { ...SURVEY_CONFIG_DEFAULTS, ...(cfgRes.rows[0]?.config || {}) };
+
+    const r = await query(
+      `SELECT rr.contact_name, rr.contact_email, rr.contact_phone, rr.status, rr.created_at,
+              sr.nps_score
+       FROM review_requests rr
+       LEFT JOIN survey_responses sr ON sr.review_request_id = rr.id
+       WHERE rr.location_id = $1
+       ORDER BY rr.created_at DESC
+       LIMIT 100`,
+      [req.params.locId]
+    ).catch(() => ({ rows: [] }));
+
+    const history = r.rows.map(h => {
+      const label = npsLabel(h.nps_score, cfg.promoter_min, cfg.passive_min);
+      return {
+        contact_name:  h.contact_name || '—',
+        contact_email: h.contact_email || null,
+        contact_phone: h.contact_phone || null,
+        channel: h.contact_email ? 'email' : (h.contact_phone ? 'sms' : '—'),
+        sent_at: h.created_at,
+        status: h.status,
+        score: h.nps_score,
+        score_label: label,
+        label,
+      };
+    });
+    res.json({ history });
+  } catch (err) {
+    logger.error('GET /surveys/:locId/history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── IMPORT CONTACTS ───────────────────────────────────────────────────────────
 // POST /api/contacts/import — bulk insert contacts from a parsed CSV
 router.post('/contacts/import', authenticateToken, async (req, res) => {
