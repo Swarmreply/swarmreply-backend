@@ -388,14 +388,14 @@ router.post('/customers/:id/users', requireAdmin, async (req, res) => {
     const hash        = await bcrypt.hash(tempPass, 12);
     const inviteToken = crypto.randomBytes(16).toString('hex');
 
-    // Insert using the EXACT column set the live team-invite flow uses (proven to
-    // match the table), then set the password + activate as best-effort follow-ups
-    // so a status CHECK constraint can never block account creation.
+    // Insert using the live team-invite column set, MINUS created_by: that column
+    // is a UUID (references a user id) and the admin only has an email, not a UUID.
+    // The admin's identity is recorded in audit_log below instead.
     const result = await query(
       `INSERT INTO team_members
-         (customer_id, email, name, role, invite_token, invite_sent_at, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,NOW(),'invited',$6) RETURNING id`,
-      [id, email, name, role, inviteToken, req.admin.email]
+         (customer_id, email, name, role, invite_token, invite_sent_at, status)
+       VALUES ($1,$2,$3,$4,$5,NOW(),'invited') RETURNING id`,
+      [id, email, name, role, inviteToken]
     );
     const newId = result.rows[0].id;
     await query('UPDATE team_members SET password_hash=$1 WHERE id=$2', [hash, newId])
