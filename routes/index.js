@@ -233,6 +233,150 @@ router.get('/stats', authenticateToken, async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// PULSE — analytics hub. One call returns real aggregates over the customer's
+// reviews / replies / review_requests / survey_responses / campaigns / llm_reports.
+// Headline stats respect ?range= (7d/30d/90d/12m); trend charts use natural
+// fixed windows (12 months for ratings, 12 weeks for volume, 8 weeks sentiment).
+// Everything is defensive: a missing/empty table yields zeros, never a 500.
+// ════════════════════════════════════════════════════════════════════════════
+router.get('/pulse', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const range = ['7d', '30d', '90d', '12m'].includes(req.query.range) ? req.query.range : '90d';
+    const days = ({ '7d': 7, '30d': 30, '90d': 90, '12m': 365 })[range];
+    const span = String(days) + ' days';
+    const q = (sql, params) => query(sql, params).catch(() => ({ rows: [] }));
+
+    const [ov, plat, rTrend, vTrend, sTrend, reqAgg, reqTrend, npsAgg, sms, camps, llm] = await Promise.all([
+      // Review overview + rating distribution + reply timing (within range)
+      q(`SELECT COUNT(rv.id) total,
+                ROUND(AVG(rv.star_rating)::numeric,1) avg_rating,
+                COUNT(*) FILTER (WHERE rv.star_rating>=4) positive,
+                COUNT(*) FILTER (WHERE rv.star_rating=3)  neutral,
+                COUNT(*) FILTER (WHERE rv.star_rating<=2) negative,
+                COUNT(*) FILTER (WHERE rv.star_rating=5) s5,
+                COUNT(*) FILTER (WHERE rv.star_rating=4) s4,
+                COUNT(*) FILTER (WHERE rv.star_rating=3) s3,
+                COUNT(*) FILTER (WHERE rv.star_rating=2) s2,
+                COUNT(*) FILTER (WHERE rv.star_rating=1) s1,
+                COUNT(*) FILTER (WHERE rv.status='replied') replied,
+                ROUND(AVG(CASE WHEN rv.status='replied'
+                  THEN EXTRACT(EPOCH FROM (rp.posted_at - rv.created_at))/3600 END)::numeric,1) avg_hours
+         FROM locations l JOIN reviews rv ON l.id=rv.location_id
+         LEFT JOIN replies rp ON rv.id=rp.review_id
+         WHERE l.customer_id=$1 AND rv.created_at >= NOW() - ($2)::interval`, [customerId, span]),
+      // By platform
+      q(`SELECT rv.platform, ROUND(AVG(rv.star_rating)::numeric,1) avg, COUNT(*) cnt
+         FROM locations l JOIN reviews rv ON l.id=rv.location_id
+         WHERE l.customer_id=$1 AND rv.created_at >= NOW() - ($2)::interval
+         GROUP BY rv.platform ORDER BY cnt DESC`, [customerId, span]),
+      // Rating trend — monthly avg, last 12 months
+      q(`SELECT date_trunc('month', rv.created_at) m, to_char(date_trunc('month', rv.created_at),'Mon YY') label,
+                ROUND(AVG(rv.star_rating)::numeric,2) value
+         FROM locations l JOIN reviews rv ON l.id=rv.location_id
+         WHERE l.customer_id=$1 AND rv.created_at >= NOW() - INTERVAL '12 months'
+         GROUP BY 1,2 ORDER BY 1`, [customerId]),
+      // Volume trend — weekly, last 12 weeks
+      q(`SELECT date_trunc('week', rv.created_at) w, COUNT(*) cnt
+         FROM locations l JOIN reviews rv ON l.id=rv.location_id
+         WHERE l.customer_id=$1 AND rv.created_at >= NOW() - INTERVAL '12 weeks'
+         GROUP BY 1 ORDER BY 1`, [customerId]),
+      // Sentiment trend — weekly positive %, last 8 weeks
+      q(`SELECT date_trunc('week', rv.created_at) w,
+                ROUND(100.0*COUNT(*) FILTER (WHERE rv.star_rating>=4)/NULLIF(COUNT(*),0)) pos_pct
+         FROM locations l JOIN reviews rv ON l.id=rv.location_id
+         WHERE l.customer_id=$1 AND rv.created_at >= NOW() - INTERVAL '8 weeks'
+         GROUP BY 1 ORDER BY 1`, [customerId]),
+      // Review requests (within range)
+      q(`SELECT COUNT(*) sent, COUNT(*) FILTER (WHERE status='completed') completed
+         FROM review_requests WHERE customer_id=$1 AND created_at >= NOW() - ($2)::interval`, [customerId, span]),
+      // Requests weekly trend, 12 weeks
+      q(`SELECT date_trunc('week', created_at) w, COUNT(*) cnt
+         FROM review_requests WHERE customer_id=$1 AND created_at >= NOW() - INTERVAL '12 weeks'
+         GROUP BY 1 ORDER BY 1`, [customerId]),
+      // NPS (within range) from survey_responses
+      q(`SELECT COUNT(*) total,
+                COUNT(*) FILTER (WHERE nps_score>=9) promoters,
+                COUNT(*) FILTER (WHERE nps_score BETWEEN 7 AND 8) passives,
+                COUNT(*) FILTER (WHERE nps_score<=6) detractors,
+                ROUND(AVG(nps_score)::numeric,1) avg
+         FROM survey_responses WHERE customer_id=$1 AND completed_at >= NOW() - ($2)::interval`, [customerId, span]),
+      // SMS usage
+      q(`SELECT sms_sent, sms_limit FROM campaign_usage WHERE customer_id=$1`, [customerId]),
+      // Recent campaigns
+      q(`SELECT name, status, recipient_count, sent_count, created_at
+         FROM campaigns WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 8`, [customerId]),
+      // Latest AI-visibility report
+      q(`SELECT report_data FROM llm_reports WHERE customer_id=$1 ORDER BY last_scan_at DESC NULLS LAST LIMIT 1`, [customerId]),
+    ]);
+
+    const o = ov.rows[0] || {};
+    const num = (v) => (v == null ? 0 : Number(v));
+    const total = num(o.total);
+    const replied = num(o.replied);
+    const positive = num(o.positive), neutral = num(o.neutral), negative = num(o.negative);
+
+    const npsRow = npsAgg.rows[0] || {};
+    const npsTotal = num(npsRow.total);
+    const npsScore = npsTotal ? Math.round(((num(npsRow.promoters) - num(npsRow.detractors)) / npsTotal) * 100) : 0;
+
+    const smsRow = sms.rows[0] || {};
+    const report = llm.rows[0]?.report_data || {};
+    const competitors = Array.isArray(report.competitors) ? report.competitors
+      : (Array.isArray(report.competitor_breakdown) ? report.competitor_breakdown : []);
+
+    res.json({
+      range,
+      overview: {
+        avgRating: num(o.avg_rating),
+        totalReviews: total,
+        sentimentScore: total ? Math.round((positive / total) * 100) : 0,
+        replyRate: total ? Math.round((replied / total) * 100) : 0,
+      },
+      sentiment: { positive, neutral, negative,
+        trend: sTrend.rows.map(r => num(r.pos_pct)) },
+      velocity: {
+        total,
+        trend: vTrend.rows.map(r => num(r.cnt)),
+        weeklyAvg: vTrend.rows.length ? +(vTrend.rows.reduce((s, r) => s + num(r.cnt), 0) / vTrend.rows.length).toFixed(1) : 0,
+        last4: vTrend.rows.slice(-4).reduce((s, r) => s + num(r.cnt), 0),
+        prior4: vTrend.rows.slice(-8, -4).reduce((s, r) => s + num(r.cnt), 0),
+      },
+      ratings: {
+        current: num(o.avg_rating),
+        distribution: [5, 4, 3, 2, 1].map(st => ({ stars: st, count: num(o['s' + st]),
+          pct: total ? Math.round((num(o['s' + st]) / total) * 100) : 0 })),
+        byPlatform: plat.rows.map(p => ({ platform: p.platform || 'Other', avg: num(p.avg), count: num(p.cnt) })),
+        trend: rTrend.rows.map(r => ({ label: r.label, value: num(r.value) })),
+      },
+      requests: (() => {
+        const rr = reqAgg.rows[0] || {};
+        const sent = num(rr.sent), completed = num(rr.completed);
+        return { sent, completed, responseRate: sent ? Math.round((completed / sent) * 100) : 0,
+          trend: reqTrend.rows.map(r => num(r.cnt)) };
+      })(),
+      nps: { score: npsScore, total: npsTotal, promoters: num(npsRow.promoters),
+        passives: num(npsRow.passives), detractors: num(npsRow.detractors), avg: num(npsRow.avg) },
+      reply: { total, replied, replyRate: total ? Math.round((replied / total) * 100) : 0,
+        avgHours: num(o.avg_hours) },
+      sms: { sent: num(smsRow.sms_sent), limit: num(smsRow.sms_limit) || 2000,
+        campaigns: camps.rows.map(c => ({ name: c.name, status: c.status,
+          recipients: num(c.recipient_count), sent: num(c.sent_count) })) },
+      aivis: {
+        visibilityScore: num(report.overall_score ?? report.visibility ?? report.visibility_score),
+        mentions: num(report.total_mentions ?? report.mentions),
+        competitors: competitors.slice(0, 5).map(c => ({
+          competitor: c.competitor || c.name || 'Competitor', mentions: num(c.mentions) })),
+      },
+      keywords: [], // honest: needs review-text NLP (not yet available)
+    });
+  } catch (err) {
+    logger.error('GET /pulse error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================
 // STRIPE WEBHOOK
 // ============================================
