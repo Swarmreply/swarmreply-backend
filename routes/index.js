@@ -634,6 +634,10 @@ router.use('/rank', rankRoutes);
 const repWidgetRoutes = require('./reputationWidget');
 router.use('/rep-widget', repWidgetRoutes);
 
+// Reports / Pulse analytics (real review-based aggregates)
+const reportsRoutes = require('./reports');
+router.use('/reports', reportsRoutes);
+
 // ============================================
 // CUSTOMER AUTH ROUTES
 // ============================================
