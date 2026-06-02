@@ -22,29 +22,18 @@ const { auditLog } = require('../middleware/audit');
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const { syncLocationBilling, countActiveLocations, priceBreakdown, PRICING } = require('../services/locationBilling');
 
-// Plan metadata — single source of truth
-const PLANS = {
-  starter: {
-    name:       'Starter',
-    price:      99,
-    priceId:    process.env.STRIPE_PRICE_BASE_MONTHLY,
-    locations:  1,
-    features:   ['1 location', 'AI review replies', 'NPS surveys', 'Listings sync', 'Zapier integration']
-  },
-  growth: {
-    name:       'Growth',
-    price:      199,
-    priceId:    process.env.STRIPE_PRICE_BASE_MONTHLY,
-    locations:  5,
-    features:   ['Up to 5 locations', 'Everything in Starter', 'Competitor benchmarking', '15-language replies', 'Priority support']
-  },
-  agency: {
-    name:       'Agency',
-    price:      null, // custom pricing
-    priceId:    process.env.STRIPE_PRICE_AGENCY,
-    locations:  null,
-    features:   ['Unlimited locations', 'Everything in Growth', 'White-label dashboard', 'Branded reports', 'Dedicated account manager']
-  }
+// Plan metadata — single per-location plan.
+// Tiered plans (Starter/Growth/Agency) were retired: there is one plan and the
+// price scales by active-location count (see services/locationBilling.js).
+const SWARMREPLY_PLAN = {
+  name:     'SwarmReply',
+  features: [
+    'AI review replies',
+    'NPS surveys & feedback routing',
+    'Review requests (SMS & email)',
+    'Listings sync',
+    'AI Visibility',
+  ],
 };
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -96,10 +85,7 @@ router.get('/status', authenticateToken, async (req, res) => {
     const customer = await getCustomerRecord(req.user.customerId);
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-    const plan = PLANS[customer.plan] || PLANS.starter;
-
-    // Per-location pricing context (DB-driven). Additive — existing consumers
-    // keep reading plan/account/stripe/availablePlans unchanged.
+    // Per-location pricing (DB-driven): one plan whose price scales by location count.
     const isAnnual = customer.stripe_price_id === process.env.STRIPE_PRICE_BASE_ANNUAL;
     const locationCount = await countActiveLocations(req.user.customerId);
     const pricing = priceBreakdown(locationCount, isAnnual);
@@ -140,11 +126,11 @@ router.get('/status', authenticateToken, async (req, res) => {
       success: true,
       billing: {
         plan: {
-          id:        customer.plan,
-          name:      plan.name,
-          price:     plan.price,
-          locations: plan.locations,
-          features:  plan.features
+          id:        'swarmreply',
+          name:      SWARMREPLY_PLAN.name,
+          price:     pricing.monthly,
+          locations: locationCount,
+          features:  SWARMREPLY_PLAN.features
         },
         account: {
           status:           customer.status,
@@ -155,15 +141,7 @@ router.get('/status', authenticateToken, async (req, res) => {
         stripe: stripeData,
         locationCount,
         billingCycle: isAnnual ? 'annual' : 'monthly',
-        pricing,
-        availablePlans: Object.entries(PLANS).map(([id, p]) => ({
-          id,
-          name:      p.name,
-          price:     p.price,
-          locations: p.locations,
-          features:  p.features,
-          current:   id === customer.plan
-        }))
+        pricing
       }
     });
   } catch (err) {
