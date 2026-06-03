@@ -568,59 +568,80 @@ function extractCompetitors(allTexts, businessName) {
     .map(([competitor, mentions]) => ({ competitor, mentions }));
 }
 
-// LLM-based competitor extraction — far more accurate than regex. Sends the
-// collected AI responses back to one model and asks it to pull out only real
-// business names mentioned as alternatives. Returns:
-//   - an array of { competitor, mentions } on success (possibly empty = none found)
-//   - null on failure, so the caller can fall back to the heuristic extractor
-async function extractCompetitorsLLM(allTexts, businessName, providers) {
+// LLM-based insights — one structured call over the collected AI responses that
+// returns, grounded in what the models actually said:
+//   - competitors: real business names + WHY each was favored (feature 1)
+//   - recommendations: prioritized, specific actions grounded in the query gaps
+//     and competitor strengths (feature 4)
+// Returns the parsed object on success, or null on failure (caller falls back).
+async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers) {
   if (!providers || !providers.length) return null;
-  // Prefer Claude > OpenAI > Gemini for structured extraction; else first available.
-  const order  = ['claude', 'chatgpt', 'gemini'];
+  // Prefer larger-output models for this structured call: OpenAI > Claude > Gemini.
+  const order  = ['chatgpt', 'claude', 'gemini'];
   const chosen = order.map(n => providers.find(p => p.name === n)).find(Boolean) || providers[0];
 
   const corpus = allTexts.filter(Boolean).join('\n\n---\n\n').slice(0, 6000);
   if (!corpus.trim()) return null;
 
+  const gapList = (queryGaps || []).map(g => `- "${g.query_text}"`).join('\n') || '(none)';
+
   const prompt =
-    `Below are responses from AI assistants answering questions about local businesses.\n\n` +
-    `Extract ONLY the names of real businesses mentioned as options, alternatives, or competitors. Rules:\n` +
-    `- Exclude "${businessName}" itself.\n` +
-    `- Include only actual business or brand names (e.g. "Joe's Plumbing", "Acme Dental") — NOT generic words, categories, cities, or sentence fragments.\n` +
-    `- Respond with a JSON array of strings and nothing else. Example: ["Name One","Name Two"]. If none, return [].\n\n` +
+    `You are analysing how AI assistants describe local businesses, to help "${businessName}" become more visible in AI answers.\n\n` +
+    `Business: ${businessName}\n` +
+    `Current AI visibility score: ${overallScore}/100\n` +
+    `Search queries where ${businessName} is MISSING from the AI answers:\n${gapList}\n\n` +
+    `Below are the actual AI assistant responses.\n\n` +
+    `Respond with ONLY a JSON object in exactly this shape, no other text:\n` +
+    `{\n` +
+    `  "competitors": [{ "name": "<real business name>", "reasons": ["<short reason the AI favoured them, grounded in the text>"] }],\n` +
+    `  "recommendations": [{ "priority": "high|medium|low", "action": "<specific action ${businessName} can take>", "rationale": "<why it matters, referencing a missing query or a competitor strength>" }]\n` +
+    `}\n\n` +
+    `Rules:\n` +
+    `- competitors: only real business/brand names mentioned as alternatives to ${businessName}; exclude ${businessName}; max 5; each reason <= 10 words and drawn from the responses (ratings, review counts, specialties the AI cited).\n` +
+    `- recommendations: 3-5 concrete, prioritised actions grounded in the missing queries above and what competitors are praised for. No generic filler.\n\n` +
     `Responses:\n${corpus}`;
 
   try {
     const r = await chosen.fn(prompt);
     if (!r.text) return null;
     let raw = r.text.trim().replace(/```json/gi, '').replace(/```/g, '').trim();
-    const match = raw.match(/\[[\s\S]*\]/);   // isolate the JSON array if wrapped in prose
+    const match = raw.match(/\{[\s\S]*\}/);   // isolate the JSON object if wrapped in prose
     if (match) raw = match[0];
-    const names = JSON.parse(raw);
-    if (!Array.isArray(names)) return null;
-    if (!names.length) return [];
-
-    const lowerBiz = (businessName || '').toLowerCase();
-    const counts = {};
-    for (let name of names) {
-      if (typeof name !== 'string') continue;
-      name = name.trim();
-      if (name.length < 2) continue;
-      const lname = name.toLowerCase();
-      if (lname === lowerBiz || (lowerBiz && lname.includes(lowerBiz))) continue;
-      // mentions = how many of the AI responses actually name this competitor
-      let mentions = 0;
-      for (const t of allTexts) if (t && t.toLowerCase().includes(lname)) mentions++;
-      counts[name] = Math.max(1, mentions);
-    }
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([competitor, mentions]) => ({ competitor, mentions }));
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      competitors:    Array.isArray(parsed.competitors)    ? parsed.competitors    : [],
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
+    };
   } catch (e) {
-    logger.warn('Competitor extraction (LLM) failed, falling back to heuristic: ' + e.message);
+    logger.warn('Insights extraction (LLM) failed, falling back to heuristic: ' + e.message);
     return null;
   }
+}
+
+// Honest fallback recommendations when the LLM insights call fails — still
+// grounded in the real score and the real query gaps, just not LLM-authored.
+function buildFallbackRecommendations(overallScore, queryGaps, byLLM) {
+  const recs = [];
+  const gapCount = (queryGaps || []).length;
+  if (gapCount) {
+    recs.push({
+      priority: 'high',
+      action: `Strengthen your presence for the ${gapCount} search${gapCount > 1 ? 'es' : ''} where AI doesn't mention you yet`,
+      rationale: 'These are the queries customers ask AI assistants where competitors appear and you do not.',
+    });
+  }
+  recs.push({
+    priority: overallScore < 40 ? 'high' : 'medium',
+    action: 'Collect more recent, detailed customer reviews on Google',
+    rationale: 'Review volume and recency are among the strongest signals AI models use when recommending local businesses.',
+  });
+  recs.push({
+    priority: 'medium',
+    action: 'Make sure your Google Business Profile is complete and current',
+    rationale: 'AI assistants lean heavily on Google Business Profile data when answering "best near me" questions.',
+  });
+  return recs;
 }
 
 function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
@@ -709,13 +730,61 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
   const missedQueries = results.filter(r => !r.mentioned).slice(0, 8)
     .map(r => ({ llm_name: r.llm_name, query_text: r.query_text }));
 
-  // Prefer LLM-based competitor extraction; fall back to the regex heuristic
-  // only if the extraction call fails (an empty result means "none found").
-  let competitors = await extractCompetitorsLLM(allTexts, businessName, providers);
-  if (competitors === null) competitors = extractCompetitors(allTexts, businessName);
+  // ── Query gaps (feature 2) — deterministic, from the per-query results ───────
+  // For each query, which models mentioned you vs missed you. Surface the ones
+  // where you're absent on at least one model (most-missed first).
+  const gapMap = {};
+  for (const r of results) {
+    if (!gapMap[r.query_text]) gapMap[r.query_text] = { query_text: r.query_text, missedOn: [], mentionedOn: [] };
+    (r.mentioned ? gapMap[r.query_text].mentionedOn : gapMap[r.query_text].missedOn).push(r.llm_name);
+  }
+  const queryGaps = Object.values(gapMap)
+    .filter(g => g.missedOn.length > 0)
+    .sort((a, b) => b.missedOn.length - a.missedOn.length)
+    .slice(0, 8);
+
+  // ── Insights (features 1 + 4) — one grounded LLM call; heuristic fallback ────
+  const insights = await extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers);
+
+  let competitors;
+  let recommendations;
+  if (insights) {
+    const lowerBiz = (businessName || '').toLowerCase();
+    competitors = (insights.competitors || [])
+      .map(c => {
+        const name = (c && typeof c.name === 'string') ? c.name.trim() : '';
+        if (!name) return null;
+        const lname = name.toLowerCase();
+        if (lname === lowerBiz || (lowerBiz && lname.includes(lowerBiz))) return null;
+        let mentions = 0;
+        for (const t of allTexts) if (t && t.toLowerCase().includes(lname)) mentions++;
+        const reasons = Array.isArray(c.reasons)
+          ? c.reasons.filter(x => typeof x === 'string' && x.trim()).slice(0, 3)
+          : [];
+        return { competitor: name, mentions: Math.max(1, mentions), reasons };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mentions - a.mentions)
+      .slice(0, 5);
+    recommendations = (insights.recommendations || [])
+      .filter(r => r && typeof r.action === 'string' && r.action.trim())
+      .map(r => ({
+        priority:  ['high', 'medium', 'low'].includes((r.priority || '').toLowerCase()) ? r.priority.toLowerCase() : 'medium',
+        action:    r.action.trim(),
+        rationale: typeof r.rationale === 'string' ? r.rationale.trim() : '',
+      }))
+      .slice(0, 5);
+  } else {
+    // LLM call failed — fall back to the regex extractor (names only, no reasons)
+    competitors = extractCompetitors(allTexts, businessName).map(c => ({ ...c, reasons: [] }));
+    recommendations = [];
+  }
+  if (!recommendations.length) {
+    recommendations = buildFallbackRecommendations(overallScore, queryGaps, byLLM);
+  }
 
   const topCompetitors = [
-    { competitor: `${businessName} (You)`, mentions: totalMentions },
+    { competitor: `${businessName} (You)`, mentions: totalMentions, reasons: [] },
     ...competitors,
   ];
 
@@ -738,6 +807,8 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
     bestMentions,
     missedQueries,
     topCompetitors,
+    queryGaps,
+    recommendations,
     nextScanAt: nextScan.toISOString(),
     lastScanAt: now.toISOString(),
   };
