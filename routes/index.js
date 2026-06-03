@@ -2222,11 +2222,13 @@ router.get('/llm/report', authenticateToken, async (req, res) => {
       [customerId]
     ).catch(() => ({ rows: [] }));
 
+    const { isScanning } = require('../services/llmMonitorService');
     const row = result.rows[0];
     res.json({
       report:     row?.report_data   || null,
       nextScanAt: row?.next_scan_at  || null,
       lastScanAt: row?.last_scan_at  || null,
+      scanning:   isScanning(customerId),
     });
   } catch (err) {
     logger.error('LLM report GET error:', err.message);
@@ -2238,6 +2240,12 @@ router.get('/llm/report', authenticateToken, async (req, res) => {
 router.post('/llm/scan', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
+    const { runRealScan, markScanning, clearScanning, isScanning } = require('../services/llmMonitorService');
+
+    // If a scan is already running for this customer, don't start another.
+    if (isScanning(customerId)) {
+      return res.json({ success: true, status: 'scanning', message: 'A scan is already running — results will appear here shortly.' });
+    }
 
     // Get customer info for the report
     const custResult = await query(
@@ -2252,10 +2260,6 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
       [customerId]
     ).catch(() => ({ rows: [] }));
     const queries = queriesResult.rows[0]?.custom_queries || [];
-
-    // Real AI Visibility scan — calls the live LLMs and derives the report from
-    // genuine responses (see services/llmMonitorService.runRealScan).
-    const { runRealScan } = require('../services/llmMonitorService');
 
     // Business name: prefer the active location's name, fall back to the account name.
     let businessName = custName;
@@ -2295,33 +2299,41 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
       }
     }
 
-    const reportData = await runRealScan({
-      businessName,
-      customQueries: queries,
-      prevScore,
+    // Respond immediately and run the scan in the background, so the request
+    // can't time out and the customer can navigate away while it runs.
+    markScanning(customerId);
+    res.json({
+      success: true,
+      status: 'scanning',
+      message: 'Scan started — this can take a few minutes. You can leave this page; your results will be here when they\'re ready.',
     });
 
-    if (reportData.error) {
-      logger.error('LLM scan: ' + reportData.error);
-      return res.status(502).json({ error: reportData.message || 'AI Visibility scan failed. Check API keys.' });
-    }
-
-    const now      = new Date(reportData.lastScanAt);
-    const nextScan = new Date(reportData.nextScanAt);
-
-    await query(
-      `INSERT INTO llm_reports (customer_id, report_data, next_scan_at, last_scan_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (customer_id)
-       DO UPDATE SET
-         report_data  = $2,
-         next_scan_at = $3,
-         last_scan_at = $4`,
-      [customerId, JSON.stringify(reportData), nextScan.toISOString(), now.toISOString()]
-    );
-
-    logger.info('LLM scan completed for customer ' + customerId);
-    res.json({ success: true, report: reportData });
+    (async () => {
+      try {
+        const reportData = await runRealScan({ businessName, customQueries: queries, prevScore });
+        if (reportData.error) {
+          logger.error('LLM scan failed for customer ' + customerId + ': ' + reportData.error);
+          return;
+        }
+        const now      = new Date(reportData.lastScanAt);
+        const nextScan = new Date(reportData.nextScanAt);
+        await query(
+          `INSERT INTO llm_reports (customer_id, report_data, next_scan_at, last_scan_at)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (customer_id)
+           DO UPDATE SET
+             report_data  = $2,
+             next_scan_at = $3,
+             last_scan_at = $4`,
+          [customerId, JSON.stringify(reportData), nextScan.toISOString(), now.toISOString()]
+        );
+        logger.info('LLM scan completed for customer ' + customerId);
+      } catch (e) {
+        logger.error('LLM scan background error for customer ' + customerId + ': ' + e.message);
+      } finally {
+        clearScanning(customerId);
+      }
+    })();
   } catch (err) {
     logger.error('LLM scan POST error:', err.message);
     res.status(500).json({ error: err.message });
