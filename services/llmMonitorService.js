@@ -568,6 +568,61 @@ function extractCompetitors(allTexts, businessName) {
     .map(([competitor, mentions]) => ({ competitor, mentions }));
 }
 
+// LLM-based competitor extraction — far more accurate than regex. Sends the
+// collected AI responses back to one model and asks it to pull out only real
+// business names mentioned as alternatives. Returns:
+//   - an array of { competitor, mentions } on success (possibly empty = none found)
+//   - null on failure, so the caller can fall back to the heuristic extractor
+async function extractCompetitorsLLM(allTexts, businessName, providers) {
+  if (!providers || !providers.length) return null;
+  // Prefer Claude > OpenAI > Gemini for structured extraction; else first available.
+  const order  = ['claude', 'chatgpt', 'gemini'];
+  const chosen = order.map(n => providers.find(p => p.name === n)).find(Boolean) || providers[0];
+
+  const corpus = allTexts.filter(Boolean).join('\n\n---\n\n').slice(0, 6000);
+  if (!corpus.trim()) return null;
+
+  const prompt =
+    `Below are responses from AI assistants answering questions about local businesses.\n\n` +
+    `Extract ONLY the names of real businesses mentioned as options, alternatives, or competitors. Rules:\n` +
+    `- Exclude "${businessName}" itself.\n` +
+    `- Include only actual business or brand names (e.g. "Joe's Plumbing", "Acme Dental") — NOT generic words, categories, cities, or sentence fragments.\n` +
+    `- Respond with a JSON array of strings and nothing else. Example: ["Name One","Name Two"]. If none, return [].\n\n` +
+    `Responses:\n${corpus}`;
+
+  try {
+    const r = await chosen.fn(prompt);
+    if (!r.text) return null;
+    let raw = r.text.trim().replace(/```json/gi, '').replace(/```/g, '').trim();
+    const match = raw.match(/\[[\s\S]*\]/);   // isolate the JSON array if wrapped in prose
+    if (match) raw = match[0];
+    const names = JSON.parse(raw);
+    if (!Array.isArray(names)) return null;
+    if (!names.length) return [];
+
+    const lowerBiz = (businessName || '').toLowerCase();
+    const counts = {};
+    for (let name of names) {
+      if (typeof name !== 'string') continue;
+      name = name.trim();
+      if (name.length < 2) continue;
+      const lname = name.toLowerCase();
+      if (lname === lowerBiz || (lowerBiz && lname.includes(lowerBiz))) continue;
+      // mentions = how many of the AI responses actually name this competitor
+      let mentions = 0;
+      for (const t of allTexts) if (t && t.toLowerCase().includes(lname)) mentions++;
+      counts[name] = Math.max(1, mentions);
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([competitor, mentions]) => ({ competitor, mentions }));
+  } catch (e) {
+    logger.warn('Competitor extraction (LLM) failed, falling back to heuristic: ' + e.message);
+    return null;
+  }
+}
+
 function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
 async function runRealScan({ businessName, businessType, city, state, customQueries, prevScore = null, maxQueries = 15 }) {
@@ -654,9 +709,14 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
   const missedQueries = results.filter(r => !r.mentioned).slice(0, 8)
     .map(r => ({ llm_name: r.llm_name, query_text: r.query_text }));
 
+  // Prefer LLM-based competitor extraction; fall back to the regex heuristic
+  // only if the extraction call fails (an empty result means "none found").
+  let competitors = await extractCompetitorsLLM(allTexts, businessName, providers);
+  if (competitors === null) competitors = extractCompetitors(allTexts, businessName);
+
   const topCompetitors = [
     { competitor: `${businessName} (You)`, mentions: totalMentions },
-    ...extractCompetitors(allTexts, businessName),
+    ...competitors,
   ];
 
   const now = new Date();
