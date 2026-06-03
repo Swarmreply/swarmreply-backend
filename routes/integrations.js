@@ -32,6 +32,7 @@ const {
   isDuplicate, logEvent, triggerReviewRequest,
 } = require('../services/integrationService');
 const logger = require('../utils/logger');
+const { captureError } = require('../utils/sentry');
 
 const FE = process.env.FRONTEND_URL || 'https://swarmreply.com';
 // B3: Jobber + index.js use APP_URL in prod. Prefer it here so Square/HubSpot/
@@ -103,7 +104,19 @@ router.delete('/:provider', authenticateToken, async (req, res) => {
       'SELECT id FROM locations WHERE customer_id = $1 LIMIT 1',
       [req.user.customerId]
     );
-    await disconnectIntegration(locs.rows[0]?.id, req.params.provider);
+    const locationId = locs.rows[0]?.id;
+
+    // Jobber: notify Jobber via appDisconnect BEFORE we drop the tokens, so it
+    // shows as disconnected on their side too (required disconnect flow).
+    if (req.params.provider === 'jobber' && locationId) {
+      const tok = await query(
+        `SELECT access_token FROM integrations WHERE location_id=$1 AND provider='jobber'`,
+        [locationId]
+      ).catch(() => ({ rows: [] }));
+      await jobberAppDisconnect(tok.rows[0]?.access_token);
+    }
+
+    await disconnectIntegration(locationId, req.params.provider);
     await auditLog(req, 'integration.disconnect', { provider: req.params.provider });
     res.json({ success: true });
   } catch (err) {
@@ -905,7 +918,9 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
 const JOBBER_AUTH_URL     = 'https://api.getjobber.com/api/oauth/authorize';
 const JOBBER_TOKEN_URL    = 'https://api.getjobber.com/api/oauth/token';
 const JOBBER_API_URL      = 'https://api.getjobber.com/api/graphql';
-const JOBBER_WEBHOOK_EVENTS = ['JOB_COMPLETED', 'APP_DISCONNECT'];
+// Jobber GraphQL is date-versioned. Set JOBBER_API_VERSION in Railway to match
+// your app's API version from the Developer Center (sent as X-JOBBER-GRAPHQL-VERSION).
+const JOBBER_API_VERSION  = process.env.JOBBER_API_VERSION || null;
 
 // GET /api/integrations/jobber/connect
 // Redirect user to Jobber OAuth consent screen
@@ -981,38 +996,11 @@ router.get('/jobber/callback', async (req, res) => {
       logger.warn('Jobber account id fetch failed:', e.message);
     }
 
-    // Register webhook for JOB_COMPLETED
-    const webhookUrl = `${process.env.APP_URL}/api/integrations/jobber/webhook`;
-    for (const event of JOBBER_WEBHOOK_EVENTS) {
-      // APP_DISCONNECT gets its own dedicated endpoint
-      const eventUrl = event === 'APP_DISCONNECT'
-        ? `${process.env.APP_URL}/api/integrations/jobber/disconnect`
-        : webhookUrl;
-
-      await fetch(JOBBER_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${tokens.access_token}`,
-          'Content-Type':  'application/json',
-        },
-        body: JSON.stringify({
-          query: `
-            mutation CreateWebhook($input: WebhookCreateInput!) {
-              webhookCreate(input: $input) {
-                webhook { id url httpMethod event { value } }
-              }
-            }
-          `,
-          variables: {
-            input: {
-              url:        eventUrl,
-              httpMethod: 'POST',
-              event:      event,
-            },
-          },
-        }),
-      }).catch(e => logger.warn('Jobber webhook register error:', e.message));
-    }
+    // NOTE: Webhook topics (incl. APP_DISCONNECT) are configured in the Jobber
+    // Developer Center app settings, NOT registered per-connection via the API.
+    // Jobber delivers every subscribed topic to one URL:
+    //   ${APP_URL}/api/integrations/jobber/webhook
+    // which is handled (with HMAC verification) by the /jobber/webhook route below.
 
     // Save integration to DB
     const existing = await query(
@@ -1050,62 +1038,118 @@ router.get('/jobber/callback', async (req, res) => {
 });
 
 // POST /api/integrations/jobber/webhook
-// Handle Jobber webhook events — JOB_COMPLETED → send review request
+// Single endpoint for ALL Jobber webhook topics (Jobber puts the topic in the
+// payload). Verifies the HMAC-SHA256 signature, then routes by topic.
+// server.js delivers this route's body as a raw Buffer (needed for the HMAC).
 router.post('/jobber/webhook', async (req, res) => {
+  const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body || {}));
+
+  // ── Verify signature: base64( HMAC-SHA256(rawBody, OAuth client secret) ) ──
+  if (process.env.JOBBER_CLIENT_SECRET) {
+    try {
+      const expected = crypto.createHmac('sha256', process.env.JOBBER_CLIENT_SECRET).update(raw).digest('base64');
+      const got = String(req.headers['x-jobber-hmac-sha256'] || '');
+      const a = Buffer.from(expected);
+      const b = Buffer.from(got);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        logger.warn('Jobber webhook: invalid signature');
+        return res.status(401).json({ error: 'invalid signature' });
+      }
+    } catch (e) {
+      logger.warn('Jobber webhook signature error:', e.message);
+      return res.status(401).json({ error: 'invalid signature' });
+    }
+  }
+
+  // Acknowledge fast (Jobber requires a quick 200), then process.
+  res.status(200).json({ received: true });
+
+  let body;
+  try { body = JSON.parse(raw.toString('utf8')); } catch { return; }
+
+  const evt       = body?.data?.webHookEvent || {};
+  const topic     = evt.topic;
+  const accountId = evt.accountId;
+  const itemId    = evt.itemId;
+  if (!topic) return;
+
   try {
-    const { topic, data } = req.body;
-
-    // Acknowledge immediately
-    res.status(200).json({ received: true });
-
-    if (topic !== 'JOB_COMPLETED') return;
-
-    const jobId       = data?.job?.id;
-    const clientEmail = data?.job?.client?.email;
-    const clientName  = data?.job?.client?.name || 'there';
-    const clientPhone = data?.job?.client?.phone || null;
-    const accountId   = data?.accountId;
-
-    if (!clientEmail || !accountId) return;
-
-    // B1: match the integration by the Jobber account that sent this event.
-    // Previously this grabbed the FIRST connected Jobber integration, so a job
-    // completed in customer B's account fired a review request for customer A.
-    // Select i.* + customer_id so the shared service has everything it needs.
-    const integResult = await query(
-      `SELECT i.*, l.customer_id
-       FROM integrations i
-       JOIN locations l ON l.id = i.location_id
-       WHERE i.provider='jobber' AND i.status='connected'
-         AND i.external_account_id = $1
-       LIMIT 1`,
-      [String(accountId)]
-    );
-
-    if (!integResult.rows.length) {
-      logger.warn(`Jobber webhook: no connected integration for account ${accountId}`);
+    // ── APP_DISCONNECT — user removed the app from Jobber's side ─────────────
+    // Jobber has already invalidated the tokens; we just mark ourselves
+    // disconnected so the UI reflects it. (Required to pass Jobber app review.)
+    if (topic === 'APP_DISCONNECT') {
+      const rows = await query(
+        `SELECT i.id, i.location_id, l.customer_id
+           FROM integrations i JOIN locations l ON l.id = i.location_id
+          WHERE i.provider='jobber' AND i.external_account_id = $1`,
+        [String(accountId)]
+      );
+      if (!rows.rows.length) {
+        logger.warn(`Jobber APP_DISCONNECT: no integration for account ${accountId}`);
+        return;
+      }
+      for (const row of rows.rows) {
+        await query(
+          `UPDATE integrations SET status='disconnected', access_token=NULL, refresh_token=NULL, updated_at=NOW() WHERE id=$1`,
+          [row.id]
+        ).catch(e => logger.warn('Jobber disconnect DB update error:', e.message));
+        await query(
+          `INSERT INTO audit_log (customer_id, action, details)
+           VALUES ($1, 'integration_disconnected', '{"provider":"jobber","source":"jobber"}'::jsonb)`,
+          [row.customer_id]
+        ).catch(() => {});
+        logger.info(`Jobber APP_DISCONNECT: marked disconnected for location ${row.location_id}`);
+      }
       return;
     }
 
-    const integration = integResult.rows[0];
+    // ── Job completion → review request ──────────────────────────────────────
+    // The webhook only carries itemId + accountId, so we fetch the job's client
+    // from Jobber's GraphQL API. NOTE: confirm the exact job-completion topic
+    // name and the job→client field path against your app's Jobber schema.
+    if (topic === 'JOB_COMPLETE' || topic === 'JOB_CLOSE' || topic === 'JOB_COMPLETED') {
+      const integ = await query(
+        `SELECT i.*, l.customer_id FROM integrations i JOIN locations l ON l.id=i.location_id
+          WHERE i.provider='jobber' AND i.status='connected' AND i.external_account_id=$1 LIMIT 1`,
+        [String(accountId)]
+      );
+      if (!integ.rows.length) { logger.warn(`Jobber webhook: no integration for account ${accountId}`); return; }
+      const integration = integ.rows[0];
 
-    // B5: route through the shared service like every other provider, so the
-    // request is actually SENT (email/SMS) instead of left as a 'queued' row.
-    // Dedup + event logging via integration_events, consistent with the others.
-    const extId = `jobber_job_${jobId}`;
-    if (await isDuplicate('jobber', extId)) return;
-    const eventId = await logEvent(integration.id, 'jobber', 'JOB_COMPLETED', extId, req.body);
+      const extId = `jobber_job_${itemId}`;
+      if (await isDuplicate('jobber', extId)) return;
 
-    const contact = {
-      name:  clientName || clientEmail.split('@')[0] || 'Customer',
-      email: clientEmail,
-      phone: clientPhone,
-    };
+      const jobRes = await fetch(JOBBER_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${integration.access_token}`,
+          'Content-Type':  'application/json',
+          ...(JOBBER_API_VERSION ? { 'X-JOBBER-GRAPHQL-VERSION': JOBBER_API_VERSION } : {}),
+        },
+        body: JSON.stringify({
+          query: `query($id: EncodedId!) { job(id: $id) { client { name emails { address } phones { number } } } }`,
+          variables: { id: itemId },
+        }),
+      });
+      const jobJson = await jobRes.json();
+      const client  = jobJson?.data?.job?.client;
+      const email   = client?.emails?.[0]?.address;
+      if (!client || !email) { logger.warn('Jobber webhook: no client email for job ' + itemId); return; }
 
-    await triggerReviewRequest(integration, contact, eventId);
-    logger.info(`Jobber job_completed: review request triggered for ${clientEmail}`);
+      const eventId = await logEvent(integration.id, 'jobber', topic, extId, body);
+      await triggerReviewRequest(integration, {
+        name:  client.name || email.split('@')[0] || 'Customer',
+        email,
+        phone: client?.phones?.[0]?.number || null,
+      }, eventId);
+      logger.info(`Jobber ${topic}: review request triggered for ${email}`);
+      return;
+    }
+
+    // Other topics (e.g. APP_CONNECT) — no action needed.
   } catch (err) {
-    logger.error('Jobber webhook error:', err.message);
+    logger.error('Jobber webhook processing error:', err.message);
+    captureError(err, { where: 'jobber-webhook', topic });
   }
 });
 
@@ -1151,100 +1195,29 @@ router.post('/jobber/refresh', authenticateToken, async (req, res) => {
   }
 });
 
-// ── JOBBER APP DISCONNECT ─────────────────────────────────────────────────────
-// POST /api/integrations/jobber/disconnect
-// Jobber calls this webhook when a user removes your app from their account.
-// We MUST call the appDisconnect GraphQL mutation back to Jobber to confirm,
-// then clean up our stored tokens and webhooks.
-router.post('/jobber/disconnect', async (req, res) => {
+// ── JOBBER OUR-SIDE DISCONNECT HELPER ─────────────────────────────────────────
+// When a user disconnects Jobber from WITHIN SwarmReply (our UI), we must notify
+// Jobber via the appDisconnect mutation so it shows as disconnected on their
+// side too. Jobber-INITIATED disconnects instead arrive via the APP_DISCONNECT
+// webhook above and need no mutation — Jobber has already invalidated the tokens.
+async function jobberAppDisconnect(accessToken) {
+  if (!accessToken) return;
   try {
-    const accountId = req.body?.accountId || req.body?.account_id;
-
-    // Acknowledge immediately — Jobber requires a 200 within a few seconds
-    res.status(200).json({ received: true });
-
-    // Find the integration record by access token header or accountId
-    // Jobber sends an Authorization header with the app's token on disconnect
-    const authHeader = req.headers['authorization'] || '';
-    const token = authHeader.replace('Bearer ', '').trim();
-
-    let integrationRows = [];
-
-    if (token) {
-      const result = await query(
-        `SELECT i.id, i.location_id, i.access_token, l.customer_id
-         FROM integrations i
-         JOIN locations l ON l.id = i.location_id
-         WHERE i.provider = 'jobber' AND i.access_token = $1`,
-        [token]
-      );
-      integrationRows = result.rows;
-    }
-
-    // If not found by token, match by the Jobber account id that sent the
-    // disconnect. B1: previously this fell back to "ALL connected jobber
-    // integrations", so one customer removing the app disconnected everyone.
-    if (!integrationRows.length && accountId) {
-      const result = await query(
-        `SELECT i.id, i.location_id, i.access_token, l.customer_id
-         FROM integrations i
-         JOIN locations l ON l.id = i.location_id
-         WHERE i.provider = 'jobber' AND i.status = 'connected'
-           AND i.external_account_id = $1`,
-        [String(accountId)]
-      );
-      integrationRows = result.rows;
-    }
-
-    if (!integrationRows.length) {
-      logger.warn(`Jobber disconnect: no matching integration (account ${accountId || 'unknown'})`);
-      return;
-    }
-
-    for (const row of integrationRows) {
-      // Call appDisconnect mutation on Jobber to confirm the disconnect
-      try {
-        await fetch(JOBBER_API_URL, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${row.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            query: `
-              mutation AppDisconnect {
-                appDisconnect {
-                  app { id name }
-                }
-              }
-            `,
-          }),
-        });
-      } catch (e) {
-        logger.warn('Jobber appDisconnect mutation error:', e.message);
-      }
-
-      // Mark integration as disconnected in our DB
-      await query(
-        `UPDATE integrations
-         SET status = 'disconnected', access_token = NULL, refresh_token = NULL, updated_at = NOW()
-         WHERE id = $1`,
-        [row.id]
-      ).catch(e => logger.warn('DB disconnect error:', e.message));
-
-      // Audit log
-      await query(
-        `INSERT INTO audit_log (customer_id, action, details)
-         VALUES ($1, 'integration_disconnected', '{"provider":"jobber"}'::jsonb)`,
-        [row.customer_id]
-      ).catch(() => {});
-
-      logger.info(`Jobber disconnected for location ${row.location_id}`);
-    }
-  } catch (err) {
-    logger.error('Jobber disconnect error:', err.message);
+    await fetch(JOBBER_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type':  'application/json',
+        ...(JOBBER_API_VERSION ? { 'X-JOBBER-GRAPHQL-VERSION': JOBBER_API_VERSION } : {}),
+      },
+      body: JSON.stringify({
+        query: `mutation { appDisconnect { app { id name } userErrors { message } } }`,
+      }),
+    });
+  } catch (e) {
+    logger.warn('Jobber appDisconnect mutation error:', e.message);
   }
-});
+}
 
 // ── JOBBER RECONNECT AFTER DISCONNECT ─────────────────────────────────────────
 // If a user disconnects and reconnects, the /jobber/callback route handles it
