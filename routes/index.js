@@ -2253,101 +2253,44 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
     ).catch(() => ({ rows: [] }));
     const queries = queriesResult.rows[0]?.custom_queries || [];
 
-    // Generate report data matching the schema the dashboard tabs read.
-    // NOTE: placeholder generator until real LLM APIs are wired. The SHAPE here
-    // is the contract the UI depends on — keep it stable when swapping in real data.
-    const MODELS = [
-      { name: 'chatgpt',    citations: ['Google Business Profile','Yelp','TripAdvisor'] },
-      { name: 'gemini',     citations: ['Google Business Profile','Google Maps Reviews','OpenTable'] },
-      { name: 'perplexity', citations: ['Yelp','TripAdvisor','Facebook'] },
-      { name: 'claude',     citations: ['Yelp','Google Reviews','Local Blogs'] },
-      { name: 'grok',       citations: ['X (Twitter)','Yelp','Google'] },
-    ];
+    // Real AI Visibility scan — calls the live LLMs and derives the report from
+    // genuine responses (see services/llmMonitorService.runRealScan).
+    const { runRealScan } = require('../services/llmMonitorService');
 
-    const activeQueries = (queries && queries.length) ? queries : [
-      'Best ' + (custName ? '' : '') + 'business in your area',
-      'Top rated local services near me',
-      'Who do people recommend locally',
-      'Best reviewed company nearby',
-    ];
+    // Business name: prefer the active location's name, fall back to the account name.
+    let businessName = custName;
+    try {
+      const locRes = await query(
+        `SELECT business_name FROM locations WHERE customer_id=$1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
+        [customerId]
+      );
+      if (locRes.rows[0]?.business_name) businessName = locRes.rows[0].business_name;
+    } catch (e) { /* fall back to account name */ }
 
-    function rateName(name) { return name.charAt(0).toUpperCase() + name.slice(1); }
+    // Previous overall score, for the delta shown on the dashboard.
+    let prevScore = null;
+    try {
+      const prevRes = await query(
+        `SELECT report_data FROM llm_reports WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        [customerId]
+      );
+      const pd = prevRes.rows[0]?.report_data;
+      if (pd && typeof pd.overallScore === 'number') prevScore = pd.overallScore;
+    } catch (e) { /* no previous report */ }
 
-    // Per-model summary + qualitative detail (byLLM) and flat query rows (results)
-    const byLLM = [];
-    const results = [];
-    let totalMentions = 0, totalPositive = 0, totalQueries = 0;
+    const reportData = await runRealScan({
+      businessName,
+      customQueries: queries,
+      prevScore,
+    });
 
-    for (const m of MODELS) {
-      const perModelQueries = activeQueries.slice(0, 8);
-      let modelMentions = 0;
-      const snippets = [];
-      perModelQueries.forEach(q => {
-        const mentioned = Math.random() > 0.35;
-        const sentiment = mentioned ? (Math.random() > 0.3 ? 'positive' : 'neutral') : 'not_mentioned';
-        const position = mentioned ? (Math.floor(Math.random() * 3) + 1) : null;
-        totalQueries++;
-        if (mentioned) { modelMentions++; totalMentions++; if (sentiment === 'positive') totalPositive++; }
-        results.push({
-          llm_name: m.name, query_text: q, mentioned,
-          mention_position: position, sentiment,
-          prev_mentioned: Math.random() > 0.5,
-        });
-        if (mentioned && snippets.length < 2) {
-          snippets.push({ query: q, text: '"' + custName + ' is referenced by ' + rateName(m.name) + ' as a recommended option for this query." — ' + rateName(m.name) });
-        }
-      });
-      const vis = Math.round((modelMentions / perModelQueries.length) * 100);
-      byLLM.push({
-        llm_name: m.name,
-        visibility_pct: vis,
-        total_queries: perModelQueries.length,
-        mentions: modelMentions,
-        sentiment: vis >= 60 ? 'positive' : 'neutral',
-        snippets,
-        citations: m.citations,
-        recommendations: [
-          rateName(m.name) + ' pulls from ' + m.citations[0] + '. Keep that profile complete and current to improve your score.',
-          'More recent reviews on ' + m.citations[1] + ' would push your ' + rateName(m.name) + ' visibility higher.',
-        ],
-      });
+    if (reportData.error) {
+      logger.error('LLM scan: ' + reportData.error);
+      return res.status(502).json({ error: reportData.message || 'AI Visibility scan failed. Check API keys.' });
     }
 
-    const overallScore = Math.round(byLLM.reduce((s, m) => s + m.visibility_pct, 0) / byLLM.length);
-
-    // bestMentions = positive snippets across models; missedQueries = not-mentioned
-    const bestMentions = results.filter(r => r.sentiment === 'positive').slice(0, 5)
-      .map(r => ({ llm_name: r.llm_name, query_text: r.query_text, position: r.mention_position }));
-    const missedQueries = results.filter(r => !r.mentioned).slice(0, 8)
-      .map(r => ({ llm_name: r.llm_name, query_text: r.query_text }));
-
-    const now = new Date();
-    const nextScan = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-    const reportData = {
-      run: {
-        completed_at:     now.toISOString(),
-        visibility_score: overallScore,
-        prev_visibility:  Math.max(0, overallScore - (Math.floor(Math.random() * 16) - 8)),
-        total_queries:    totalQueries,
-        total_mentions:   totalMentions,
-        total_positive:   totalPositive,
-        total_not_found:  totalQueries - totalMentions,
-      },
-      overallScore,
-      byLLM,
-      results,
-      bestMentions,
-      missedQueries,
-      topCompetitors: [
-        { competitor: custName + ' (You)', mentions: totalMentions },
-        { competitor: 'Top Competitor',    mentions: Math.max(1, totalMentions - (Math.floor(Math.random() * 6) + 1)) },
-        { competitor: 'Second Competitor', mentions: Math.max(1, totalMentions - (Math.floor(Math.random() * 10) + 4)) },
-        { competitor: 'Third Competitor',  mentions: Math.max(1, totalMentions - (Math.floor(Math.random() * 12) + 8)) },
-      ],
-      nextScanAt: nextScan.toISOString(),
-      lastScanAt: now.toISOString(),
-    };
+    const now      = new Date(reportData.lastScanAt);
+    const nextScan = new Date(reportData.nextScanAt);
 
     await query(
       `INSERT INTO llm_reports (customer_id, report_data, next_scan_at, last_scan_at)
