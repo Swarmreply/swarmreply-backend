@@ -8,6 +8,7 @@ const cron = require('node-cron');
 const reviewProcessor = require('./services/reviewProcessor');
 const { runDueScans } = require('./scheduler.llm');
 const logger = require('./utils/logger');
+const { captureError } = require('./utils/sentry');
 
 /**
  * startScheduler()
@@ -28,6 +29,7 @@ function startScheduler() {
       await reviewProcessor.processAllActiveLocations();
     } catch (error) {
       logger.error('Scheduler: Review processing failed:', error.message);
+      captureError(error, { job: 'review-processing' });
     }
   });
 
@@ -42,6 +44,7 @@ function startScheduler() {
       await reviewProcessor.retryFailedReplies();
     } catch (error) {
       logger.error('Scheduler: Retry job failed:', error.message);
+      captureError(error, { job: 'retry-replies' });
     }
   });
 
@@ -56,6 +59,7 @@ function startScheduler() {
       await reviewProcessor.sendWeeklyDigests();
     } catch (error) {
       logger.error('Scheduler: Weekly digest failed:', error.message);
+      captureError(error, { job: 'weekly-digest' });
     }
   });
 
@@ -72,6 +76,7 @@ function startScheduler() {
       await runDueScans();
     } catch (error) {
       logger.error('Scheduler: AI Visibility re-scan job failed:', error.message);
+      captureError(error, { job: 'ai-visibility-rescan' });
     }
   });
 

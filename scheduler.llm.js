@@ -18,6 +18,7 @@
 const { query } = require('./database/db');
 const { runRealScan } = require('./services/llmMonitorService');
 const logger = require('./utils/logger');
+const { captureError, captureMessage } = require('./utils/sentry');
 
 const SCAN_GAP_MS = 15000; // pause between customers to respect provider rate limits
 
@@ -81,6 +82,7 @@ async function runDueScans() {
         if (reportData.error) {
           // Leave the previous report intact rather than overwriting with nothing.
           logger.error(`[LLM Scheduler] ${customerId}: scan skipped (${reportData.error})`);
+          captureMessage(`Auto re-scan skipped: ${reportData.error}`, { customerId, skippedProviders: reportData.skippedProviders });
           failed++;
         } else {
           const now      = new Date(reportData.lastScanAt);
@@ -97,6 +99,7 @@ async function runDueScans() {
         }
       } catch (err) {
         logger.error(`[LLM Scheduler] ${customerId}: re-scan failed — ${err.message}`);
+        captureError(err, { where: 'llm-scheduler', customerId });
         failed++;
       }
 
@@ -106,6 +109,7 @@ async function runDueScans() {
     logger.info(`[LLM Scheduler] Done — ${scanned} scanned, ${failed} failed, of ${due} due`);
   } catch (err) {
     logger.error('[LLM Scheduler] Fatal error:', err.message);
+    captureError(err, { where: 'llm-scheduler-fatal' });
   }
   return { due, scanned, failed };
 }
