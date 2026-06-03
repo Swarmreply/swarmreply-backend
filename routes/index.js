@@ -2189,8 +2189,8 @@ router.put('/llm/queries', authenticateToken, async (req, res) => {
     if (!Array.isArray(customQueries)) {
       return res.status(400).json({ error: 'customQueries must be an array' });
     }
-    if (customQueries.length > 32) {
-      return res.status(400).json({ error: 'Maximum 32 custom queries allowed' });
+    if (customQueries.length > 15) {
+      return res.status(400).json({ error: 'Maximum 15 custom queries allowed' });
     }
 
     await query(
@@ -2269,14 +2269,31 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
 
     // Previous overall score, for the delta shown on the dashboard.
     let prevScore = null;
+    let lastScanAt = null;
     try {
       const prevRes = await query(
-        `SELECT report_data FROM llm_reports WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1`,
+        `SELECT report_data, last_scan_at FROM llm_reports WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1`,
         [customerId]
       );
       const pd = prevRes.rows[0]?.report_data;
       if (pd && typeof pd.overallScore === 'number') prevScore = pd.overallScore;
+      lastScanAt = prevRes.rows[0]?.last_scan_at || null;
     } catch (e) { /* no previous report */ }
+
+    // Weekly cadence: the first scan runs on demand; after that, the next scan is
+    // only available 7 days after the last one ran (rolling).
+    if (lastScanAt) {
+      const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+      const nextAllowed = new Date(new Date(lastScanAt).getTime() + SEVEN_DAYS);
+      if (Date.now() < nextAllowed.getTime()) {
+        return res.status(429).json({
+          error: 'cooldown',
+          message: `Scans run once a week. Your next scan is available on ${nextAllowed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}.`,
+          nextScanAt: nextAllowed.toISOString(),
+          lastScanAt: new Date(lastScanAt).toISOString(),
+        });
+      }
+    }
 
     const reportData = await runRealScan({
       businessName,
