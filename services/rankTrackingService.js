@@ -1,15 +1,15 @@
 // ============================================
 // services/rankTrackingService.js
-// Item 13 — Google Business Profile rank tracking
+// Item 13 — Google search rank tracking
 //
 // Tracks where a business appears in Google search
-// results for up to 5 keywords per location.
-// Uses the Serper.dev API (cheap, reliable, no
-// Google approval needed — $50 covers 50k searches).
+// results for up to 15 keywords per location.
+// Uses the DataForSEO SERP API (Google Organic, Live
+// Advanced) — HTTP Basic auth with login + password.
 //
-// What we track per keyword per week:
-//   - Organic position (1-20, null = not found)
-//   - Local pack position (1-3 or null)
+// What we track per keyword per check:
+//   - Organic position (rank_group, null = not found)
+//   - Local pack position (1-N or null)
 //   - Whether they appear in the map pack at all
 // ============================================
 
@@ -17,8 +17,18 @@ const axios   = require('axios');
 const { query } = require('../database/db');
 const logger  = require('../utils/logger');
 
-const SERPER_API = 'https://google.serper.dev/search';
-const MAX_KEYWORDS = 5;
+// DataForSEO Google Organic — Live Advanced (real-time, returns local pack too)
+const DATAFORSEO_URL = 'https://api.dataforseo.com/v3/serp/google/organic/live/advanced';
+// Country-level context is always a valid location_name; geo intent comes from the
+// keyword itself (e.g. "best dentist in Sacramento"). Override for finer targeting.
+const DATAFORSEO_LOCATION = process.env.DATAFORSEO_LOCATION || 'United States';
+
+const MAX_KEYWORDS  = 15;  // total keywords a location can track
+const AUTO_KEYWORDS = 5;   // starter keywords seeded automatically
+
+function hasCreds() {
+  return !!(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD);
+}
 
 // ── AUTO-GENERATE KEYWORDS ────────────────────────────────────────────────────
 // When a customer connects GBP, we seed 5 keywords automatically
@@ -33,7 +43,7 @@ function buildAutoKeywords(businessName, businessType, city, state) {
     `best ${type} in ${city}`,                   // category query
     `${type} near ${city}`,                      // near me variant
     `${type} ${city}`,                           // simple category + city
-  ].slice(0, MAX_KEYWORDS);
+  ].slice(0, AUTO_KEYWORDS);
 }
 
 // ── SEED KEYWORDS FOR A LOCATION ─────────────────────────────────────────────
@@ -61,56 +71,64 @@ async function seedKeywords(locationId) {
   logger.info(`Seeded ${keywords.length} rank keywords for location ${locationId}`);
 }
 
-// ── SEARCH ONE KEYWORD ────────────────────────────────────────────────────────
+// ── SEARCH ONE KEYWORD (DataForSEO Google Organic, Live Advanced) ─────────────
 async function searchKeyword(businessName, keyword, city) {
-  if (!process.env.SERPER_API_KEY) {
-    // No API key — return mock data for demo/dev
-    return {
-      position:      Math.floor(Math.random() * 10) + 1,
-      inLocalPack:   Math.random() > 0.5,
-      packPosition:  Math.random() > 0.5 ? Math.ceil(Math.random() * 3) : null,
-      totalResults:  Math.floor(Math.random() * 1000000) + 100000,
-    };
-  }
+  const nameNorm    = (businessName || '').toLowerCase().trim();
+  const nameCompact = nameNorm.replace(/\s+/g, '');
 
   try {
     const res = await axios.post(
-      SERPER_API,
-      { q: keyword, gl: 'us', hl: 'en', num: 20 },
+      DATAFORSEO_URL,
+      [{
+        keyword,
+        location_name: DATAFORSEO_LOCATION,
+        language_code: 'en',
+        device:        'desktop',
+        depth:         20,
+      }],
       {
-        headers: {
-          'X-API-KEY':    process.env.SERPER_API_KEY,
-          'Content-Type': 'application/json',
+        auth: {
+          username: process.env.DATAFORSEO_LOGIN,
+          password: process.env.DATAFORSEO_PASSWORD,
         },
-        timeout: 10000,
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000,
       }
     );
 
-    const data = res.data;
-    const nameNorm = businessName.toLowerCase();
-
-    // ── Check organic results ─────────────────────────────────────────────────
-    let position = null;
-    const organic = data.organic || [];
-    for (let i = 0; i < organic.length; i++) {
-      const title = (organic[i].title || '').toLowerCase();
-      const link  = (organic[i].link  || '').toLowerCase();
-      if (title.includes(nameNorm) || link.includes(nameNorm.replace(/\s+/g, ''))) {
-        position = i + 1;
-        break;
-      }
+    const task   = res.data?.tasks?.[0];
+    if (task && task.status_code && task.status_code !== 20000) {
+      logger.error(`DataForSEO task error for "${keyword}": ${task.status_message}`);
     }
+    const result = task?.result?.[0];
+    const items  = result?.items || [];
 
-    // ── Check local pack (map results) ────────────────────────────────────────
+    let position     = null;   // organic rank_group (position among organic results)
     let inLocalPack  = false;
     let packPosition = null;
-    const localPack  = data.places || data.localResults || [];
-    for (let i = 0; i < localPack.length; i++) {
-      const title = (localPack[i].title || localPack[i].name || '').toLowerCase();
-      if (title.includes(nameNorm)) {
-        inLocalPack  = true;
-        packPosition = i + 1;
-        break;
+    let localCount   = 0;
+
+    for (const it of items) {
+      // Organic match — first organic result whose title/domain/url matches the business
+      if (it.type === 'organic' && position === null) {
+        const title  = (it.title  || '').toLowerCase();
+        const domain = (it.domain || '').toLowerCase();
+        const url    = (it.url    || '').toLowerCase();
+        if (nameNorm && (title.includes(nameNorm) ||
+            (nameCompact && (domain.includes(nameCompact) || url.includes(nameCompact))))) {
+          position = it.rank_group || it.rank_absolute || null;
+        }
+      }
+      // Local pack — count entries; record position of the first matching one
+      if (it.type === 'local_pack') {
+        localCount++;
+        if (!inLocalPack) {
+          const title = (it.title || '').toLowerCase();
+          if (nameNorm && title.includes(nameNorm)) {
+            inLocalPack  = true;
+            packPosition = localCount;
+          }
+        }
       }
     }
 
@@ -118,23 +136,27 @@ async function searchKeyword(businessName, keyword, city) {
       position,
       inLocalPack,
       packPosition,
-      totalResults: data.searchInformation?.totalResults || null,
+      totalResults: result?.se_results_count || null,
     };
   } catch (err) {
-    logger.error(`Serper search error for "${keyword}":`, err.message);
+    logger.error(`DataForSEO search error for "${keyword}": ${err.response?.data?.status_message || err.message}`);
     return { position: null, inLocalPack: false, packPosition: null, totalResults: null };
   }
 }
 
 // ── RUN WEEKLY RANK CHECK FOR A LOCATION ─────────────────────────────────────
 async function runRankCheck(locationId) {
+  if (!hasCreds()) {
+    logger.error('Rank check: DataForSEO credentials not configured');
+    return { error: 'no_credentials', message: 'Rank tracking is not configured (set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD).' };
+  }
   try {
     const locRes = await query(
       'SELECT business_name, city FROM locations WHERE id = $1',
       [locationId]
     );
     const loc = locRes.rows[0];
-    if (!loc) return;
+    if (!loc) return { error: 'no_location' };
 
     const kwRes = await query(
       'SELECT id, keyword FROM rank_keywords WHERE location_id = $1 AND active = true',
@@ -149,8 +171,8 @@ async function runRankCheck(locationId) {
     logger.info(`Running rank check for ${loc.business_name} (${keywords.length} keywords)`);
 
     for (const kw of keywords) {
-      // Rate limit — 1 search per second to stay within Serper limits
-      await new Promise(r => setTimeout(r, 1200));
+      // Light pacing between live SERP calls
+      await new Promise(r => setTimeout(r, 500));
 
       const result = await searchKeyword(loc.business_name, kw.keyword, loc.city);
 
@@ -169,8 +191,10 @@ async function runRankCheck(locationId) {
         `| pack: ${result.inLocalPack ? `#${result.packPosition}` : 'no'}`
       );
     }
+    return { checked: keywords.length };
   } catch (err) {
     logger.error(`Rank check error for ${locationId}:`, err.message);
+    return { error: err.message };
   }
 }
 
