@@ -119,16 +119,17 @@ async function queryOpenAI(prompt) {
       {
         model:    OPENAI_MODEL,
         messages: [{ role: 'user', content: prompt }],
-        max_completion_tokens: 1024
+        max_completion_tokens: 2048
       },
       { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
     );
-    return {
-      text:        res.data.choices[0]?.message?.content || '',
-      response_ms: Date.now() - start,
-      model:       OPENAI_MODEL,
-      error:       null
-    };
+    const choice = res.data.choices?.[0];
+    const text   = choice?.message?.content || '';
+    // Succeeded but no visible content — usually a reasoning model that spent its
+    // whole budget on hidden reasoning. Surface the real reason, not "unknown".
+    const error  = text ? null
+      : `empty content (model: ${OPENAI_MODEL}, finish_reason: ${choice?.finish_reason || 'n/a'}, completion_tokens: ${res.data.usage?.completion_tokens ?? 'n/a'})`;
+    return { text, response_ms: Date.now() - start, model: OPENAI_MODEL, error };
   } catch (err) {
     return { text: '', response_ms: Date.now() - start, model: OPENAI_MODEL, error: err.response?.data?.error?.message || err.message };
   }
@@ -143,7 +144,11 @@ async function queryGemini(prompt) {
       { contents: [{ parts: [{ text: prompt }] }] }
     );
     const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return { text, response_ms: Date.now() - start, model: GEMINI_MODEL, error: null };
+    const finish = res.data.candidates?.[0]?.finishReason;
+    const blocked = res.data.promptFeedback?.blockReason;
+    const error = text ? null
+      : `empty content (model: ${GEMINI_MODEL}, finishReason: ${finish || 'n/a'}${blocked ? ', blocked: ' + blocked : ''})`;
+    return { text, response_ms: Date.now() - start, model: GEMINI_MODEL, error };
   } catch (err) {
     return { text: '', response_ms: Date.now() - start, model: GEMINI_MODEL, error: err.response?.data?.error?.message || err.message };
   }
