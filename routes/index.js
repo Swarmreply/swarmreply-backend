@@ -9,6 +9,7 @@ const router = express.Router();
 const { query } = require('../database/db');
 const googleService = require('../services/googleService');
 const logger = require('../utils/logger');
+const { captureError, captureMessage } = require('../utils/sentry');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticateToken } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
@@ -2313,6 +2314,7 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
         const reportData = await runRealScan({ businessName, customQueries: queries, prevScore });
         if (reportData.error) {
           logger.error('LLM scan failed for customer ' + customerId + ': ' + reportData.error);
+          captureMessage('AI Visibility scan failed: ' + reportData.error, { customerId, skippedProviders: reportData.skippedProviders });
           return;
         }
         const now      = new Date(reportData.lastScanAt);
@@ -2330,6 +2332,7 @@ router.post('/llm/scan', authenticateToken, async (req, res) => {
         logger.info('LLM scan completed for customer ' + customerId);
       } catch (e) {
         logger.error('LLM scan background error for customer ' + customerId + ': ' + e.message);
+        captureError(e, { where: 'llm-scan-background', customerId });
       } finally {
         clearScanning(customerId);
       }

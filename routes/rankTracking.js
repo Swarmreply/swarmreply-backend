@@ -5,6 +5,7 @@ const { query }             = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
 const rank = require('../services/rankTrackingService');
 const logger = require('../utils/logger');
+const { captureError } = require('../utils/sentry');
 
 async function getLocationId(customerId) {
   const r = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1',[customerId]);
@@ -62,7 +63,7 @@ router.post('/check', authenticateToken, async (req, res) => {
     const locationId = await getLocationId(req.user.customerId);
     if (!locationId) return res.status(404).json({ error: 'No location found' });
     // Run async — don't block the response
-    rank.runRankCheck(locationId).catch(e => logger.error('Manual rank check error:', e.message));
+    rank.runRankCheck(locationId).catch(e => { logger.error('Manual rank check error:', e.message); captureError(e, { where: 'rank-check', locationId }); });
     res.json({ success: true, message: 'Rank check started — results available in a few minutes' });
   } catch (err) {
     res.status(500).json({ error: err.message });
