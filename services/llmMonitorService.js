@@ -31,7 +31,16 @@ const axios     = require('axios');
 const { query } = require('../database/db');
 const logger    = require('../utils/logger');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Only construct the Anthropic client if a key is present — otherwise the SDK
+// can throw at boot. Claude is optional; OpenAI + Gemini carry the scan.
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+
+// Model IDs are env-overridable so provider model churn never needs a code change.
+const OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-5-mini';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+const GEMINI_MODEL    = process.env.GEMINI_MODEL    || 'gemini-3.5-flash';
 
 // ── QUERY TEMPLATES ───────────────────────────────────────────────────────────
 // These are the prompts we send to each LLM.
@@ -82,21 +91,22 @@ function normaliseType(businessType) {
 // ── LLM QUERY FUNCTIONS ───────────────────────────────────────────────────────
 
 async function queryClaudeAI(prompt) {
+  if (!anthropic) return { text: '', error: 'ANTHROPIC_API_KEY not configured', skipped: true };
   const start = Date.now();
   try {
     const response = await anthropic.messages.create({
-      model:      'claude-sonnet-4-6',
+      model:      ANTHROPIC_MODEL,
       max_tokens: 1024,
       messages:   [{ role: 'user', content: prompt }]
     });
     return {
       text:        response.content[0]?.text || '',
       response_ms: Date.now() - start,
-      model:       'claude-sonnet-4-6',
+      model:       ANTHROPIC_MODEL,
       error:       null
     };
   } catch (err) {
-    return { text: '', response_ms: Date.now() - start, model: 'claude-sonnet-4-6', error: err.message };
+    return { text: '', response_ms: Date.now() - start, model: ANTHROPIC_MODEL, error: err.message };
   }
 }
 
@@ -107,20 +117,20 @@ async function queryOpenAI(prompt) {
     const res = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model:    'gpt-4o',
+        model:    OPENAI_MODEL,
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1024
+        max_completion_tokens: 1024
       },
       { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
     );
     return {
       text:        res.data.choices[0]?.message?.content || '',
       response_ms: Date.now() - start,
-      model:       'gpt-4o',
+      model:       OPENAI_MODEL,
       error:       null
     };
   } catch (err) {
-    return { text: '', response_ms: Date.now() - start, model: 'gpt-4o', error: err.response?.data?.error?.message || err.message };
+    return { text: '', response_ms: Date.now() - start, model: OPENAI_MODEL, error: err.response?.data?.error?.message || err.message };
   }
 }
 
@@ -129,13 +139,13 @@ async function queryGemini(prompt) {
   const start = Date.now();
   try {
     const res = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`,
       { contents: [{ parts: [{ text: prompt }] }] }
     );
     const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return { text, response_ms: Date.now() - start, model: 'gemini-1.5-pro', error: null };
+    return { text, response_ms: Date.now() - start, model: GEMINI_MODEL, error: null };
   } catch (err) {
-    return { text: '', response_ms: Date.now() - start, model: 'gemini-1.5-pro', error: err.response?.data?.error?.message || err.message };
+    return { text: '', response_ms: Date.now() - start, model: GEMINI_MODEL, error: err.response?.data?.error?.message || err.message };
   }
 }
 
@@ -486,8 +496,190 @@ async function getLocationsForScan() {
   return result.rows.map(r => r.location_id);
 }
 
+// ── REAL VISIBILITY SCAN ──────────────────────────────────────────────────────
+// Calls the live LLMs and derives the report from genuine responses. Mention
+// detection is done locally (string + heuristics) so we don't pay for a second
+// analysis call per query. Producers: only providers whose API key is set AND
+// that actually returned text are included — a misconfigured provider is
+// skipped rather than dragging the score to zero.
+
+const POSITIVE_WORDS = /\b(best|top|recommend|recommended|great|excellent|highly|popular|favou?rite|love|trusted|leading|standout|go-to)\b/i;
+
+const COMPETITOR_STOPWORDS = new Set([
+  'The','This','That','These','Those','There','Their','They','You','Your','Yelp','Google',
+  'Maps','Reviews','Review','Facebook','Instagram','TripAdvisor','OpenTable','Here','Some',
+  'Many','Most','Based','However','While','When','With','For','And','But','Also','One','Each',
+  'If','It','In','On','At','As','To','Of','A','An','I','We','Overall','Note','Tips','Best',
+]);
+
+function detectMention(text, businessName) {
+  if (!text || !businessName) return { mentioned: false, position: null, sentiment: 'not_mentioned', snippet: null };
+  const lowerText = text.toLowerCase();
+  const lowerName = businessName.toLowerCase().trim();
+  const idx = lowerText.indexOf(lowerName);
+  if (idx === -1) return { mentioned: false, position: null, sentiment: 'not_mentioned', snippet: null };
+
+  // Rough prominence by where the name first appears in the response.
+  const frac = idx / Math.max(1, text.length);
+  const position = frac < 0.15 ? 1 : frac < 0.45 ? 2 : 3;
+
+  // Sentiment from a window around the mention.
+  const window = text.slice(Math.max(0, idx - 120), idx + lowerName.length + 120);
+  const sentiment = POSITIVE_WORDS.test(window) ? 'positive' : 'neutral';
+
+  // Snippet = the sentence containing the mention, trimmed.
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  let snippet = sentences.find(s => s.toLowerCase().includes(lowerName)) || text.slice(idx, idx + 200);
+  snippet = snippet.trim().replace(/\s+/g, ' ');
+  if (snippet.length > 220) snippet = snippet.slice(0, 217) + '…';
+
+  return { mentioned: true, position, sentiment, snippet };
+}
+
+function extractCompetitors(allTexts, businessName) {
+  const lowerName = (businessName || '').toLowerCase();
+  const counts = {};
+  const re = /\b([A-Z][a-zA-Z&'’.]+(?:\s+[A-Z][a-zA-Z&'’.]+){0,3})\b/g;
+  for (const text of allTexts) {
+    if (!text) continue;
+    const seen = new Set();
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const phrase = m[1].trim();
+      const first = phrase.split(/\s+/)[0];
+      if (phrase.length < 4) continue;
+      if (COMPETITOR_STOPWORDS.has(first)) continue;
+      if (phrase.toLowerCase() === lowerName) continue;
+      if (lowerName && phrase.toLowerCase().includes(lowerName)) continue;
+      if (seen.has(phrase.toLowerCase())) continue; // count once per response
+      seen.add(phrase.toLowerCase());
+      counts[phrase] = (counts[phrase] || 0) + 1;
+    }
+  }
+  return Object.entries(counts)
+    .filter(([, c]) => c >= 2)            // mentioned in 2+ responses to count
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([competitor, mentions]) => ({ competitor, mentions }));
+}
+
+function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+async function runRealScan({ businessName, businessType, city, state, customQueries, prevScore = null, maxQueries = 8 }) {
+  const queries = (Array.isArray(customQueries) && customQueries.length
+    ? customQueries
+    : buildQueries({ business_name: businessName, business_type: businessType, city, state })
+  ).slice(0, maxQueries);
+
+  const providers = [];
+  if (process.env.OPENAI_API_KEY) providers.push({ name: 'chatgpt', fn: queryOpenAI });
+  if (process.env.GEMINI_API_KEY) providers.push({ name: 'gemini',  fn: queryGemini });
+  if (anthropic)                  providers.push({ name: 'claude',  fn: queryClaudeAI });
+
+  if (providers.length === 0) {
+    return { error: 'no_providers', message: 'No LLM API keys configured (set OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY).' };
+  }
+
+  const byLLM = [];
+  const results = [];
+  const allTexts = [];
+  let totalMentions = 0, totalPositive = 0, totalQueries = 0;
+
+  for (const provider of providers) {
+    const modelResults = [];
+    const snippets = [];
+    let modelMentions = 0;
+    let hadText = false;
+    let lastError = null;
+
+    for (const q of queries) {
+      const r = await provider.fn(q);
+      if (r.text) { hadText = true; allTexts.push(r.text); }
+      if (r.error) lastError = r.error;
+      const det = detectMention(r.text, businessName);
+      modelResults.push({
+        llm_name: provider.name, query_text: q,
+        mentioned: det.mentioned, mention_position: det.position,
+        sentiment: det.sentiment, prev_mentioned: false,
+      });
+      if (det.mentioned) {
+        modelMentions++;
+        if (det.sentiment === 'positive') totalPositive++;
+        if (snippets.length < 2 && det.snippet) snippets.push({ query: q, text: det.snippet });
+      }
+    }
+
+    // Skip providers that never returned text (bad key / wrong model) so they
+    // don't drag the score down or report a fake 0%.
+    if (!hadText) {
+      logger.warn(`AI Visibility: ${provider.name} returned no text (${lastError || 'unknown'}) — excluded from report`);
+      continue;
+    }
+
+    results.push(...modelResults);
+    totalQueries += queries.length;
+    totalMentions += modelMentions;
+
+    const vis = Math.round((modelMentions / queries.length) * 100);
+    let rec;
+    if (vis === 0)      rec = `${cap(provider.name)} isn't recommending you yet for these searches. A complete Google Business Profile and more recent reviews are the fastest ways to start appearing.`;
+    else if (vis < 60)  rec = `${cap(provider.name)} mentions you in ${modelMentions} of ${queries.length} queries. More recent, detailed reviews and a fuller profile can lift this.`;
+    else                rec = `${cap(provider.name)} recommends you in ${vis}% of these queries — keep your profile and reviews fresh to hold that lead.`;
+
+    byLLM.push({
+      llm_name:       provider.name,
+      visibility_pct: vis,
+      total_queries:  queries.length,
+      mentions:       modelMentions,
+      sentiment:      vis >= 60 ? 'positive' : vis > 0 ? 'neutral' : 'not_mentioned',
+      snippets,
+      citations:      [],          // real citations aren't returned by chat APIs; left empty rather than faked
+      recommendations: [rec],
+    });
+  }
+
+  if (byLLM.length === 0) {
+    return { error: 'all_providers_failed', message: 'No LLM returned a usable response. Check your API keys and model settings.' };
+  }
+
+  const overallScore = Math.round(byLLM.reduce((s, m) => s + m.visibility_pct, 0) / byLLM.length);
+
+  const bestMentions = results.filter(r => r.sentiment === 'positive').slice(0, 5)
+    .map(r => ({ llm_name: r.llm_name, query_text: r.query_text, position: r.mention_position }));
+  const missedQueries = results.filter(r => !r.mentioned).slice(0, 8)
+    .map(r => ({ llm_name: r.llm_name, query_text: r.query_text }));
+
+  const topCompetitors = [
+    { competitor: `${businessName} (You)`, mentions: totalMentions },
+    ...extractCompetitors(allTexts, businessName),
+  ];
+
+  const now = new Date();
+  const nextScan = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  return {
+    run: {
+      completed_at:     now.toISOString(),
+      visibility_score: overallScore,
+      prev_visibility:  prevScore != null ? prevScore : overallScore,
+      total_queries:    totalQueries,
+      total_mentions:   totalMentions,
+      total_positive:   totalPositive,
+      total_not_found:  totalQueries - totalMentions,
+    },
+    overallScore,
+    byLLM,
+    results,
+    bestMentions,
+    missedQueries,
+    topCompetitors,
+    nextScanAt: nextScan.toISOString(),
+    lastScanAt: now.toISOString(),
+  };
+}
+
 module.exports = {
   runScan, getLatestReport, getHistoricalScores,
   getOrCreateConfig, updateConfig, getLocationsForScan,
-  buildQueries
+  buildQueries, runRealScan
 };
