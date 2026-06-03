@@ -56,6 +56,9 @@ router.delete('/keywords/:id', authenticateToken, async (req, res) => {
 // POST /api/rank/check — trigger a manual rank check
 router.post('/check', authenticateToken, async (req, res) => {
   try {
+    if (!process.env.DATAFORSEO_LOGIN || !process.env.DATAFORSEO_PASSWORD) {
+      return res.status(502).json({ error: 'Rank tracking is not configured yet. Add your DataForSEO credentials.' });
+    }
     const locationId = await getLocationId(req.user.customerId);
     if (!locationId) return res.status(404).json({ error: 'No location found' });
     // Run async — don't block the response
