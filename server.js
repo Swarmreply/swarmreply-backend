@@ -163,10 +163,12 @@ app.use('/api/team/invite', inviteLimiter);
 // Stripe webhook MUST get raw body — handle before JSON parser
 app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }));
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+// Jobber webhook needs the raw body for HMAC-SHA256 signature verification
+app.use('/api/integrations/jobber/webhook', express.raw({ type: '*/*' }));
 
 // All other routes get JSON
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook') return next();
+  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook' || req.path === '/api/integrations/jobber/webhook') return next();
   express.json({ limit: '10mb' })(req, res, next);
 });
 
@@ -181,7 +183,7 @@ app.get('/api/auth/csrf', generateCsrf);
 // Global input sanitization — strip control chars from all string body values
 // Skip for Stripe webhook — raw body must not be modified
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook') return next();
+  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook' || req.path === '/api/integrations/jobber/webhook') return next();
   sanitizeBody(req, res, next);
 });
 
@@ -191,6 +193,7 @@ app.use((req, res, next) => {
   // Skip CSRF for Stripe webhooks and auth endpoints (they use JWT instead)
   const skipCsrf = [
     '/api/webhooks/stripe', '/api/stripe/webhook',
+    '/api/integrations/jobber/webhook',
     '/api/customers/login', '/api/customers/logout',
     '/api/admin/login',
   ];
