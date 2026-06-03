@@ -6,6 +6,7 @@
 
 const cron = require('node-cron');
 const reviewProcessor = require('./services/reviewProcessor');
+const { runDueScans } = require('./scheduler.llm');
 const logger = require('./utils/logger');
 
 /**
@@ -58,7 +59,23 @@ function startScheduler() {
     }
   });
 
-  logger.info('Scheduler started — 3 jobs active');
+  // ============================================
+  // JOB 4: AI Visibility weekly re-scans
+  // Runs every day at 3am; only re-scans customers
+  // who are DUE (last scan 7+ days ago). This naturally
+  // staggers cost across the week and keeps reports fresh
+  // without the customer having to click "Run scan".
+  // ============================================
+  cron.schedule('0 3 * * *', async () => {
+    logger.info('Scheduler: Running AI Visibility due re-scans');
+    try {
+      await runDueScans();
+    } catch (error) {
+      logger.error('Scheduler: AI Visibility re-scan job failed:', error.message);
+    }
+  });
+
+  logger.info('Scheduler started — 4 jobs active');
 }
 
 module.exports = { startScheduler };
