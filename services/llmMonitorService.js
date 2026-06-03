@@ -594,11 +594,12 @@ async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScor
     `Respond with ONLY a JSON object in exactly this shape, no other text:\n` +
     `{\n` +
     `  "competitors": [{ "name": "<real business name>", "reasons": ["<short reason the AI favoured them, grounded in the text>"] }],\n` +
-    `  "recommendations": [{ "priority": "high|medium|low", "action": "<specific action ${businessName} can take>", "rationale": "<why it matters, referencing a missing query or a competitor strength>" }]\n` +
+    `  "recommendations": [{ "priority": "high|medium|low", "action": "<specific action ${businessName} can take>", "rationale": "<why it matters, referencing a missing query or a competitor strength>", "steps": ["<concrete how-to step>", "<another step>"] }]\n` +
     `}\n\n` +
     `Rules:\n` +
     `- competitors: only real business/brand names mentioned as alternatives to ${businessName}; exclude ${businessName}; max 5; each reason <= 10 words and drawn from the responses (ratings, review counts, specialties the AI cited).\n` +
-    `- recommendations: 3-5 concrete, prioritised actions grounded in the missing queries above and what competitors are praised for. No generic filler.\n\n` +
+    `- recommendations: 3-5 concrete, prioritised actions grounded in the missing queries above and what competitors are praised for. No generic filler.\n` +
+    `- steps: for EACH recommendation, give 2-4 specific, practical how-to steps the owner can actually do. Tailor them to the business type you infer from the responses — e.g. a software/SaaS company should get steps about review sites like G2/Capterra, comparison/"vs alternatives" pages, and content; a local service business should get steps about Google Business Profile, local directories/citations, and asking customers for reviews. Steps must be real actions (improve reviews, web presence, listings, on-page content) — never promise that an action guarantees a ranking change.\n\n` +
     `Responses:\n${corpus}`;
 
   try {
@@ -629,22 +630,79 @@ function buildFallbackRecommendations(overallScore, queryGaps, byLLM) {
       priority: 'high',
       action: `Strengthen your presence for the ${gapCount} search${gapCount > 1 ? 'es' : ''} where AI doesn't mention you yet`,
       rationale: 'These are the queries customers ask AI assistants where competitors appear and you do not.',
+      steps: [
+        'Add content to your website that directly answers these searches (a service page or FAQ using that wording)',
+        'Ask recent customers to mention the relevant service or specialty in their reviews',
+        'Make sure these services are listed explicitly on your Google Business Profile and directory listings',
+      ],
     });
   }
   recs.push({
     priority: overallScore < 40 ? 'high' : 'medium',
     action: 'Collect more recent, detailed customer reviews on Google',
     rationale: 'Review volume and recency are among the strongest signals AI models use when recommending local businesses.',
+    steps: [
+      'Send review requests to recent happy customers (SwarmReply automates this)',
+      'Aim for a steady cadence rather than a one-time burst — recency matters',
+      'Reply to every review so the profile looks active and engaged',
+    ],
   });
   recs.push({
     priority: 'medium',
     action: 'Make sure your Google Business Profile is complete and current',
     rationale: 'AI assistants lean heavily on Google Business Profile data when answering "best near me" questions.',
+    steps: [
+      'Fill in every field: hours, services, categories, description, photos',
+      'Keep your name, address, and phone identical across all sites',
+      'Post updates periodically so the profile stays active',
+    ],
   });
   return recs;
 }
 
 function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+// ── SCAN STATUS (in-memory) ───────────────────────────────────────────────────
+// Tracks which customers have a scan running right now, so the API can report
+// "scanning" while the work happens in the background and the UI can poll.
+// NOTE: in-memory = single-instance. Fine pre-launch; move to DB if we scale out.
+const _scanning = new Set();
+function markScanning(id)  { _scanning.add(String(id)); }
+function clearScanning(id) { _scanning.delete(String(id)); }
+function isScanning(id)    { return _scanning.has(String(id)); }
+
+// ── RETRY HELPERS ─────────────────────────────────────────────────────────────
+const RETRY_DELAYS_MS = [2000, 5000, 10000]; // up to 3 retries, seconds-scale backoff
+
+function isTransient(msg) {
+  if (!msg) return false;
+  return /high demand|temporar|overload|rate.?limit|too many requests|try again|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|\b(429|500|502|503|504)\b/i.test(msg);
+}
+
+// Short, honest reason shown to the user when a provider is skipped this scan.
+function friendlyProviderError(msg) {
+  if (!msg) return 'temporarily unavailable';
+  if (/api key not valid|invalid.*key|incorrect api key|unauthor/i.test(msg)) return 'API key issue';
+  if (/model/i.test(msg) && /not found|does not exist|unknown|unsupported/i.test(msg)) return 'model not available';
+  if (/empty content/i.test(msg)) return 'no response returned';
+  return 'temporarily unavailable';
+}
+
+// Call a provider, retrying only on transient errors (overload, rate limit, 5xx,
+// network). Permanent errors (bad key, model not found, empty reasoning output)
+// are returned immediately — retrying wouldn't help.
+async function callWithRetry(fn, prompt, label) {
+  let r = await fn(prompt);
+  let attempt = 0;
+  while (!r.text && r.error && isTransient(r.error) && attempt < RETRY_DELAYS_MS.length) {
+    const delay = RETRY_DELAYS_MS[attempt];
+    logger.warn(`AI Visibility: ${label} transient error (${r.error}) — retrying in ${delay / 1000}s`);
+    await new Promise(res => setTimeout(res, delay));
+    r = await fn(prompt);
+    attempt++;
+  }
+  return r;
+}
 
 async function runRealScan({ businessName, businessType, city, state, customQueries, prevScore = null, maxQueries = 15 }) {
   const queries = (Array.isArray(customQueries) && customQueries.length
@@ -661,21 +719,22 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
     return { error: 'no_providers', message: 'No LLM API keys configured (set OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY).' };
   }
 
-  const byLLM = [];
-  const results = [];
   const allTexts = [];
-  let totalMentions = 0, totalPositive = 0, totalQueries = 0;
+  let totalPositive = 0;
 
-  for (const provider of providers) {
+  // Scan one provider: its queries run sequentially, each call retried on
+  // transient errors. Returns its own result bundle (no shared mutation).
+  async function scanProvider(provider) {
     const modelResults = [];
     const snippets = [];
+    const texts = [];
     let modelMentions = 0;
     let hadText = false;
     let lastError = null;
 
     for (const q of queries) {
-      const r = await provider.fn(q);
-      if (r.text) { hadText = true; allTexts.push(r.text); }
+      const r = await callWithRetry(provider.fn, q, provider.name);
+      if (r.text) { hadText = true; texts.push(r.text); }
       if (r.error) lastError = r.error;
       const det = detectMention(r.text, businessName);
       modelResults.push({
@@ -685,21 +744,36 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
       });
       if (det.mentioned) {
         modelMentions++;
-        if (det.sentiment === 'positive') totalPositive++;
         if (snippets.length < 2 && det.snippet) snippets.push({ query: q, text: det.snippet });
       }
     }
+    return { provider, modelResults, snippets, texts, modelMentions, hadText, lastError };
+  }
 
-    // Skip providers that never returned text (bad key / wrong model) so they
-    // don't drag the score down or report a fake 0%.
+  // Run all providers in parallel — they're independent, so this is ~Nx faster.
+  const providerOutputs = await Promise.all(providers.map(scanProvider));
+
+  const byLLM = [];
+  const results = [];
+  const skippedProviders = [];
+  let totalMentions = 0, totalQueries = 0;
+
+  for (const out of providerOutputs) {
+    const { provider, modelResults, snippets, texts, modelMentions, hadText, lastError } = out;
+
+    // Skip providers that returned nothing even after retries — note them
+    // honestly instead of silently dropping them or faking a 0%.
     if (!hadText) {
       logger.warn(`AI Visibility: ${provider.name} returned no text (${lastError || 'unknown'}) — excluded from report`);
+      skippedProviders.push({ llm_name: provider.name, reason: friendlyProviderError(lastError) });
       continue;
     }
 
+    allTexts.push(...texts);
     results.push(...modelResults);
-    totalQueries += queries.length;
+    totalQueries  += queries.length;
     totalMentions += modelMentions;
+    for (const mr of modelResults) if (mr.mentioned && mr.sentiment === 'positive') totalPositive++;
 
     const vis = Math.round((modelMentions / queries.length) * 100);
     let rec;
@@ -720,7 +794,7 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
   }
 
   if (byLLM.length === 0) {
-    return { error: 'all_providers_failed', message: 'No LLM returned a usable response. Check your API keys and model settings.' };
+    return { error: 'all_providers_failed', message: 'No LLM returned a usable response. Check your API keys and model settings.', skippedProviders };
   }
 
   const overallScore = Math.round(byLLM.reduce((s, m) => s + m.visibility_pct, 0) / byLLM.length);
@@ -772,6 +846,7 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
         priority:  ['high', 'medium', 'low'].includes((r.priority || '').toLowerCase()) ? r.priority.toLowerCase() : 'medium',
         action:    r.action.trim(),
         rationale: typeof r.rationale === 'string' ? r.rationale.trim() : '',
+        steps:     Array.isArray(r.steps) ? r.steps.filter(s => typeof s === 'string' && s.trim()).map(s => s.trim()).slice(0, 4) : [],
       }))
       .slice(0, 5);
   } else {
@@ -809,6 +884,7 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
     topCompetitors,
     queryGaps,
     recommendations,
+    skippedProviders,
     nextScanAt: nextScan.toISOString(),
     lastScanAt: now.toISOString(),
   };
@@ -817,5 +893,6 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
 module.exports = {
   runScan, getLatestReport, getHistoricalScores,
   getOrCreateConfig, updateConfig, getLocationsForScan,
-  buildQueries, runRealScan
+  buildQueries, runRealScan,
+  markScanning, clearScanning, isScanning
 };
