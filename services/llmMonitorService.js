@@ -565,7 +565,7 @@ function extractCompetitors(allTexts, businessName) {
 
 function cap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
-async function runRealScan({ businessName, businessType, city, state, customQueries, prevScore = null, maxQueries = 8 }) {
+async function runRealScan({ businessName, businessType, city, state, customQueries, prevScore = null, maxQueries = 15 }) {
   const queries = (Array.isArray(customQueries) && customQueries.length
     ? customQueries
     : buildQueries({ business_name: businessName, business_type: businessType, city, state })
