@@ -8,10 +8,14 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const logger = require('../utils/logger');
 
-// Initialize Anthropic client
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+// Initialize Anthropic client only if a key is present (so a missing key can't
+// crash boot — replies fall back to the safe canned response instead).
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+
+// Model is env-overridable so a provider model rename never needs a code change.
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 
 // ============================================
 // MAIN REPLY GENERATOR
@@ -233,12 +237,13 @@ function detectEdgeCases(review, businessProfile) {
  * Handles rate limits, timeouts, and API errors
  */
 async function callClaudeWithRetry(systemPrompt, userPrompt, maxRetries = 3) {
+  if (!anthropic) throw new Error('ANTHROPIC_API_KEY not configured');
   let lastError;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const message = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
+        model: ANTHROPIC_MODEL,
         max_tokens: 300,
         system: systemPrompt,
         messages: [
