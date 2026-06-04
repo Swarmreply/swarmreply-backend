@@ -66,4 +66,37 @@ router.post('/start', authenticateToken, async (req, res) => {
   }
 });
 
+// ── GET /api/onboarding/suggestions ─────────────────────────────────────────
+// "Suggest for me" — starter keywords + AI questions generated from the
+// customer's business profile, reusing the same deterministic generators the
+// rest of the app uses (no LLM cost, instant, no failure modes).
+router.get('/suggestions', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { query } = require('../database/db');
+    const r = await query(
+      `SELECT business_name, business_type, city, state
+         FROM locations WHERE customer_id=$1 ORDER BY created_at ASC LIMIT 1`,
+      [customerId]
+    );
+    const loc = r.rows[0];
+    if (!loc) return res.json({ keywords: [], aiQueries: [] });
+
+    let keywords = [], aiQueries = [];
+    try {
+      const { buildAutoKeywords } = require('../services/rankTrackingService');
+      keywords = buildAutoKeywords(loc.business_name, loc.business_type, loc.city, loc.state) || [];
+    } catch (e) { logger.warn('keyword suggestions:', e.message); }
+    try {
+      const { buildQueries } = require('../services/llmMonitorService');
+      aiQueries = buildQueries({ business_name: loc.business_name, business_type: loc.business_type, city: loc.city, state: loc.state }) || [];
+    } catch (e) { logger.warn('ai query suggestions:', e.message); }
+
+    res.json({ keywords: keywords.slice(0, 15), aiQueries: aiQueries.slice(0, 15) });
+  } catch (err) {
+    logger.error('Onboarding suggestions error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
