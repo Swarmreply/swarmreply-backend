@@ -631,6 +631,10 @@ router.use('/approvals', approvalRoutes);
 const rankRoutes = require('./rankTracking');
 router.use('/rank', rankRoutes);
 
+// Onboarding wizard (data-driven engine — services/onboardingService.js)
+const onboardingRoutes = require('./onboarding');
+router.use('/onboarding', onboardingRoutes);
+
 // Reputation widget (Item 14)
 const repWidgetRoutes = require('./reputationWidget');
 router.use('/rep-widget', repWidgetRoutes);
@@ -882,84 +886,6 @@ router.post('/auth/reset-password', async (req, res) => {
 });
 
 
-// Returns whether the customer has completed onboarding
-// (has at least one connected location)
-router.get('/onboarding/status', authenticateToken, async (req, res) => {
-  try {
-    const customerId = req.user.customerId || req.user.id;
-
-    const result = await query(
-      `SELECT
-         COUNT(id) as total_locations,
-         COUNT(CASE WHEN is_active = true THEN 1 END) as active_locations,
-         COUNT(CASE WHEN platform IS NOT NULL AND platform != '' THEN 1 END) as connected_locations,
-         COUNT(CASE WHEN tone IS NOT NULL AND tone != '' THEN 1 END) as tone_set,
-         COUNT(CASE WHEN google_review_url IS NOT NULL AND google_review_url != '' THEN 1 END) as has_review_url
-       FROM locations
-       WHERE customer_id = $1`,
-      [customerId]
-    );
-    const row = result.rows[0];
-
-    // Real per-step signals (Option A — driven off actual data, no phantom columns)
-    const step1_business   = parseInt(row.total_locations) > 0;
-    const step2_google     = parseInt(row.connected_locations) > 0;
-    const step3_tone       = parseInt(row.tone_set) > 0;
-
-    const reqResult = await query(
-      'SELECT COUNT(id) as c FROM review_requests WHERE customer_id=$1', [customerId]
-    ).catch(() => ({ rows: [{ c: 0 }] }));
-    const step4_request    = parseInt(reqResult.rows[0].c) > 0;
-
-    const tmplResult = await query(
-      'SELECT customer_id FROM review_templates WHERE customer_id=$1', [customerId]
-    ).catch(() => ({ rows: [] }));
-    const step5_survey     = tmplResult.rows.length > 0 || parseInt(row.has_review_url) > 0;
-
-    const STEP_LABELS = [
-      'Add your business',
-      'Connect Google Business Profile',
-      'Set your AI tone',
-      'Send your first review request',
-      'Set up your NPS survey',
-    ];
-    const stepFlags = [step1_business, step2_google, step3_tone, step4_request, step5_survey];
-    const completedCount = stepFlags.filter(Boolean).length;
-    // currentStep = first incomplete step (1-indexed), or 5 if all done
-    const firstIncomplete = stepFlags.findIndex(s => !s);
-    const currentStep = firstIncomplete === -1 ? 5 : firstIncomplete + 1;
-    // Return steps as an ARRAY (the shape the onboarding wizard expects:
-    // status.steps.find(st => st.step === n)?.completed).
-    const steps = stepFlags.map((done, i) => ({
-      step:      i + 1,
-      completed: !!done,
-      label:     STEP_LABELS[i],
-    }));
-
-    res.json({
-      onboarding: {
-        completed:        completedCount >= 5,
-        completedCount,
-        currentStep,
-        steps,
-        flags: {
-          business_created:   step1_business,
-          google_connected:   step2_google,
-          tone_configured:    step3_tone,
-          review_request_sent:step4_request,
-          survey_configured:  step5_survey,
-        },
-        hasLocation:      step1_business,
-        hasConnected:     step2_google,
-        totalLocations:   parseInt(row.total_locations),
-        activeLocations:  parseInt(row.active_locations),
-      }
-    });
-  } catch (err) {
-    logger.error('Onboarding status error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ── TEMPLATE TEST SEND ────────────────────────────────────────────────────────
 // POST /api/templates/test-send
