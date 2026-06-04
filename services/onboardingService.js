@@ -45,12 +45,12 @@ const STEPS = [
   },
   {
     id: 'connect_google', title: 'Connect your Google Business Profile',
-    milestone: 'activate', required: true, points: 25, estMinutes: 2,
-    dependsOn: ['business_details'], featureFlag: null,
+    milestone: 'activate', required: false, points: 25, estMinutes: 2,
+    dependsOn: ['business_details'], featureFlag: 'gbp',
     derive: (ctx) => ctx.connectedLocations > 0,
   },
   {
-    id: 'review_link', title: 'Set your review link',
+    id: 'review_link', title: 'Add your review links (Google, Yelp & Facebook)',
     milestone: 'activate', required: true, points: 15, estMinutes: 2,
     dependsOn: ['business_details'], featureFlag: null,
     derive: (ctx) => ctx.hasReviewUrl > 0,
@@ -64,13 +64,7 @@ const STEPS = [
 
   // ── Optimize ──
   {
-    id: 'review_platforms', title: 'Add your review platforms (Yelp, Facebook)',
-    milestone: 'optimize', required: false, points: 10, estMinutes: 2,
-    dependsOn: ['business_details'], featureFlag: null,
-    derive: (ctx) => ctx.otherReviewUrls > 0,
-  },
-  {
-    id: 'keywords', title: 'Add keywords to track your local ranking',
+    id: 'keywords', title: 'Add keywords to track your SEO rankings',
     milestone: 'optimize', required: false, points: 15, estMinutes: 2,
     dependsOn: ['business_details'], featureFlag: null,
     derive: (ctx) => ctx.keywords > 0,
@@ -84,7 +78,7 @@ const STEPS = [
 
   // ── Pro ──
   {
-    id: 'connect_integration', title: 'Connect a CRM or scheduling tool',
+    id: 'connect_integration', title: 'Integrations',
     milestone: 'pro', required: false, points: 10, estMinutes: 3,
     dependsOn: ['business_details'], featureFlag: null,
     derive: (ctx) => ctx.integrations > 0,
@@ -92,7 +86,7 @@ const STEPS = [
   {
     id: 'auto_reply_config', title: 'Configure your auto-reply tone',
     milestone: 'pro', required: false, points: 10, estMinutes: 2,
-    dependsOn: ['business_details'], featureFlag: null,
+    dependsOn: ['business_details'], featureFlag: 'autoreply',
     // Manual: tone defaults to "warm" on every location, so a derived signal
     // would be trivially true. The customer explicitly confirms their tone.
   },
@@ -185,10 +179,12 @@ async function gatherContext(customerId) {
 }
 
 function isComplete(step, ctx) {
+  // A stored flag (manual completion, e.g. "I'll do this later") completes any step.
+  if (ctx.flags && ctx.flags[step.id]) return true;
   if (typeof step.derive === 'function') {
     try { return !!step.derive(ctx); } catch { return false; }
   }
-  return !!ctx.flags[step.id];
+  return false;
 }
 
 // ── Compute the full status object the API returns ──────────────────────────────
@@ -239,6 +235,13 @@ async function computeStatus(customerId) {
   const next = steps.find(s => !s.completed && !s.locked);
   const minutesLeft = steps.filter(s => !s.completed).reduce((a, s) => a + (s.estMinutes || 0), 0);
 
+  // "New steps available": a feature-flagged step (e.g. GBP, auto-reply) has been
+  // turned on AFTER the customer already finished/parked onboarding. Used to
+  // re-surface the dashboard setup card with a "new steps" notice on launch day.
+  const newStepsAvailable =
+    (activated || !!ctx.state?.dismissed) &&
+    visible.some(s => s.featureFlag && !completedMap[s.id]);
+
   return {
     onboarding: {
       activated,
@@ -255,6 +258,7 @@ async function computeStatus(customerId) {
       milestoneLabel: milestoneTier ? MILESTONE_LABELS[milestoneTier] : null,
       nextStepId: next ? next.id : null,
       minutesLeft,
+      newStepsAvailable,
       startedAt: ctx.state?.started_at || null,
       steps,
     },
