@@ -106,12 +106,14 @@ router.post('/locations', authenticateToken, async (req, res) => {
   }
 
   try {
+    // platform_location_id is NOT NULL in the schema; generate a placeholder for
+    // manually-created locations (mirrors the admin/demo insert). is_active = true.
     const result = await query(
       `INSERT INTO locations
-       (customer_id, business_name, business_type, platform, contact_email, tone, is_healthcare)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (customer_id, business_name, business_type, platform, platform_location_id, contact_email, tone, is_healthcare, is_active)
+       VALUES ($1, $2, $3, $4, 'manual_' || gen_random_uuid()::text, $5, $6, $7, true)
        RETURNING id, business_name, platform`,
-      [customerId, businessName, businessType, platform, contactEmail, tone || 'warm', isHealthcare || false]
+      [customerId, businessName, businessType || null, platform, contactEmail || null, tone || 'warm', isHealthcare || false]
     );
 
     logger.info(`New location created: ${businessName} for customer ${customerId}`);
@@ -125,7 +127,7 @@ router.post('/locations', authenticateToken, async (req, res) => {
     res.status(201).json({ location: result.rows[0] });
   } catch (error) {
     logger.error('Create location error:', error.message);
-    res.status(500).json({ error: 'Failed to create location' });
+    res.status(500).json({ error: 'Failed to create location', details: error.message });
   }
 });
 
