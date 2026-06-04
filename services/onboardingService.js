@@ -67,7 +67,7 @@ const STEPS = [
     id: 'review_platforms', title: 'Add your review platforms (Yelp, Facebook)',
     milestone: 'optimize', required: false, points: 10, estMinutes: 2,
     dependsOn: ['business_details'], featureFlag: null,
-    // No clean data signal yet — flag-based until we store platform URLs.
+    derive: (ctx) => ctx.otherReviewUrls > 0,
   },
   {
     id: 'keywords', title: 'Add keywords to track your local ranking',
@@ -92,8 +92,9 @@ const STEPS = [
   {
     id: 'auto_reply_config', title: 'Configure your auto-reply tone',
     milestone: 'pro', required: false, points: 10, estMinutes: 2,
-    dependsOn: ['connect_google'], featureFlag: null,
-    derive: (ctx) => ctx.toneSet > 0,
+    dependsOn: ['business_details'], featureFlag: null,
+    // Manual: tone defaults to "warm" on every location, so a derived signal
+    // would be trivially true. The customer explicitly confirms their tone.
   },
 
   // ── Q4 (hidden until the 'social' feature flag is enabled) ──
@@ -115,7 +116,7 @@ function enabledFeatureFlags() {
 // ── Gather the real-data signals once, then derive each step from them ──────────
 async function gatherContext(customerId) {
   const ctx = {
-    locations: 0, connectedLocations: 0, toneSet: 0, hasReviewUrl: 0,
+    locations: 0, connectedLocations: 0, toneSet: 0, hasReviewUrl: 0, otherReviewUrls: 0,
     reviewRequests: 0, keywords: 0, aiQueries: 0, integrations: 0, flags: {},
   };
 
@@ -126,7 +127,9 @@ async function gatherContext(customerId) {
          COUNT(id) AS total_locations,
          COUNT(CASE WHEN platform IS NOT NULL AND platform != '' THEN 1 END) AS connected_locations,
          COUNT(CASE WHEN tone IS NOT NULL AND tone != '' THEN 1 END) AS tone_set,
-         COUNT(CASE WHEN google_review_url IS NOT NULL AND google_review_url != '' THEN 1 END) AS has_review_url
+         COUNT(CASE WHEN google_review_url IS NOT NULL AND google_review_url != '' THEN 1 END) AS has_review_url,
+         COUNT(CASE WHEN (facebook_review_url IS NOT NULL AND facebook_review_url != '')
+                      OR (yelp_review_url IS NOT NULL AND yelp_review_url != '') THEN 1 END) AS has_other_review_url
        FROM locations WHERE customer_id = $1`,
       [customerId]
     );
@@ -135,6 +138,7 @@ async function gatherContext(customerId) {
     ctx.connectedLocations = parseInt(row.connected_locations) || 0;
     ctx.toneSet            = parseInt(row.tone_set)             || 0;
     ctx.hasReviewUrl       = parseInt(row.has_review_url)       || 0;
+    ctx.otherReviewUrls    = parseInt(row.has_other_review_url) || 0;
   } catch (e) { logger.warn('onboarding ctx locations:', e.message); }
 
   try {
