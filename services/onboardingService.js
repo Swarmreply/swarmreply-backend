@@ -217,7 +217,8 @@ async function computeStatus(customerId) {
 
   const totalPoints   = steps.reduce((a, s) => a + s.points, 0);
   const earnedPoints  = steps.reduce((a, s) => a + (s.completed ? s.points : 0), 0);
-  const pct           = totalPoints ? Math.round((earnedPoints / totalPoints) * 100) : 0;
+  // Progress is by steps completed (intuitive), not points.
+  const pct           = steps.length ? Math.round((steps.filter(s => s.completed).length / steps.length) * 100) : 0;
   const completedCount = steps.filter(s => s.completed).length;
 
   // Required ("activate core") progress
