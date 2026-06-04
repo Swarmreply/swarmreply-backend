@@ -1493,6 +1493,25 @@ router.put('/locations/:id/review-urls', authenticateToken, async (req, res) => 
       [googleReviewUrl || null, facebookReviewUrl || null, yelpReviewUrl || null, id, customerId]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Location not found' });
+
+    // Keep the review template's platform list in sync with the links the customer
+    // actually has, so the NPS survey shows exactly those buttons (Google always on).
+    try {
+      const platforms = ['google'];
+      if (facebookReviewUrl && String(facebookReviewUrl).trim()) platforms.push('facebook');
+      if (yelpReviewUrl && String(yelpReviewUrl).trim()) platforms.push('yelp');
+      const tr = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId])
+        .catch(() => ({ rows: [] }));
+      const cfg = tr.rows[0]?.config || {};
+      cfg.platforms = platforms;
+      await query(
+        `INSERT INTO review_templates (customer_id, config, updated_at)
+         VALUES ($1,$2,NOW())
+         ON CONFLICT (customer_id) DO UPDATE SET config=$2, updated_at=NOW()`,
+        [customerId, JSON.stringify(cfg)]
+      );
+    } catch (e) { logger.warn('review-urls platform sync skipped:', e.message); }
+
     res.json({ success: true });
   } catch (err) {
     logger.error('PUT review-urls error:', err.message);
