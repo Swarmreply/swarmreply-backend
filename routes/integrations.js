@@ -1107,7 +1107,7 @@ router.post('/jobber/webhook', async (req, res) => {
     // The webhook only carries itemId + accountId, so we fetch the job's client
     // from Jobber's GraphQL API. NOTE: confirm the exact job-completion topic
     // name and the job→client field path against your app's Jobber schema.
-    if (topic === 'JOB_COMPLETE' || topic === 'JOB_CLOSE' || topic === 'JOB_COMPLETED') {
+    if (topic === 'JOB_CLOSED' || topic === 'JOB_COMPLETE' || topic === 'JOB_CLOSE' || topic === 'JOB_COMPLETED') {
       const integ = await query(
         `SELECT i.*, l.customer_id FROM integrations i JOIN locations l ON l.id=i.location_id
           WHERE i.provider='jobber' AND i.status='connected' AND i.external_account_id=$1 LIMIT 1`,
