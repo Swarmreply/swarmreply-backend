@@ -22,6 +22,11 @@
 const express  = require('express');
 const router   = express.Router();
 const crypto   = require('crypto');
+const { signState, verifyState } = require('../utils/oauthState');
+const { encrypt, decrypt } = require('../middleware/encrypt');
+
+// Tolerate legacy plaintext rows: return value as-is if it isn't our ciphertext format
+const safeDecrypt = (v) => { if (!v) return v; try { return decrypt(v); } catch { return v; } };
 const axios    = require('axios');
 const { query }             = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
@@ -113,7 +118,7 @@ router.delete('/:provider', authenticateToken, async (req, res) => {
         `SELECT access_token FROM integrations WHERE location_id=$1 AND provider='jobber'`,
         [locationId]
       ).catch(() => ({ rows: [] }));
-      await jobberAppDisconnect(tok.rows[0]?.access_token);
+      await jobberAppDisconnect(safeDecrypt(tok.rows[0]?.access_token));
     }
 
     await disconnectIntegration(locationId, req.params.provider);
@@ -192,10 +197,10 @@ async function handleStripePaymentForReview(stripeCustomerId, amount, currency, 
 // ══════════════════════════════════════════════════════════════════════════════
 
 router.get('/square/connect', authenticateToken, async (req, res) => {
-  const state = Buffer.from(JSON.stringify({
+  const state = signState({
     customerId: req.user.customerId,
     ts:         Date.now(),
-  })).toString('base64');
+  });
 
   const url = new URL('https://connect.squareup.com/oauth2/authorize');
   url.searchParams.set('client_id',    process.env.SQUARE_APP_ID);
@@ -214,7 +219,7 @@ router.get('/square/callback', async (req, res) => {
   }
 
   try {
-    const { customerId } = JSON.parse(Buffer.from(state, 'base64').toString());
+    const { customerId } = verifyState(state);
 
     // Exchange code for token
     const tokenRes = await axios.post('https://connect.squareup.com/oauth2/token', {
@@ -333,9 +338,9 @@ router.post('/square/webhook', express.raw({ type: '*/*' }), async (req, res) =>
 // ══════════════════════════════════════════════════════════════════════════════
 
 router.get('/hubspot/connect', authenticateToken, async (req, res) => {
-  const state = Buffer.from(JSON.stringify({
+  const state = signState({
     customerId: req.user.customerId, ts: Date.now()
-  })).toString('base64');
+  });
 
   const url = new URL('https://app.hubspot.com/oauth/authorize');
   url.searchParams.set('client_id',    process.env.HUBSPOT_CLIENT_ID);
@@ -351,7 +356,7 @@ router.get('/hubspot/callback', async (req, res) => {
   if (error) return res.redirect(`${FE}/dashboard/settings?integration=hubspot&error=denied`);
 
   try {
-    const { customerId } = JSON.parse(Buffer.from(state, 'base64').toString());
+    const { customerId } = verifyState(state);
 
     const tokenRes = await axios.post('https://api.hubapi.com/oauth/v1/token',
       new URLSearchParams({
@@ -403,12 +408,34 @@ router.get('/hubspot/callback', async (req, res) => {
   }
 });
 
-router.post('/hubspot/webhook', express.json(), async (req, res) => {
+router.post('/hubspot/webhook', async (req, res) => {
+  // Raw body (registered in server.js) is required for v3 signature verification
+  const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body || {});
+
+  // ── Verify HubSpot v3 signature: base64( HMAC-SHA256(secret, method+uri+body+timestamp) ) ──
+  const hsSecret = process.env.HUBSPOT_CLIENT_SECRET;
+  if (hsSecret) {
+    const ts  = req.headers['x-hubspot-request-timestamp'];
+    const sig = req.headers['x-hubspot-signature-v3'];
+    const fresh = ts && Math.abs(Date.now() - Number(ts)) < 5 * 60 * 1000;
+    const base  = 'POST' + 'https://' + req.get('host') + req.originalUrl + rawBody + ts;
+    const expected = crypto.createHmac('sha256', hsSecret).update(base).digest('base64');
+    const ok = fresh && sig && sig.length === expected.length &&
+               crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    if (!ok) {
+      logger.warn('HubSpot webhook: invalid or stale signature — rejected');
+      return res.sendStatus(401);
+    }
+  } else {
+    logger.warn('HubSpot webhook: HUBSPOT_CLIENT_SECRET not set — signature NOT verified');
+  }
+
   res.sendStatus(200);
 
   try {
     // HubSpot sends an array of events
-    const events = Array.isArray(req.body) ? req.body : [req.body];
+    let parsed; try { parsed = JSON.parse(rawBody); } catch { parsed = []; }
+    const events = Array.isArray(parsed) ? parsed : [parsed];
 
     for (const event of events) {
       if (event.subscriptionType !== 'deal.propertyChange') continue;
@@ -473,9 +500,9 @@ router.get('/shopify/connect', authenticateToken, async (req, res) => {
   const { shop } = req.query;
   if (!shop) return res.status(400).json({ error: 'shop parameter required (e.g. mystore.myshopify.com)' });
 
-  const state = Buffer.from(JSON.stringify({
+  const state = signState({
     customerId: req.user.customerId, shop, ts: Date.now()
-  })).toString('base64');
+  });
 
   const url = new URL(`https://${shop}/admin/oauth/authorize`);
   url.searchParams.set('client_id',    process.env.SHOPIFY_API_KEY);
@@ -500,7 +527,7 @@ router.get('/shopify/callback', async (req, res) => {
       return res.redirect(`${FE}/dashboard/settings?integration=shopify&error=invalid_hmac`);
     }
 
-    const { customerId } = JSON.parse(Buffer.from(state, 'base64').toString());
+    const { customerId } = verifyState(state);
 
     const tokenRes = await axios.post(`https://${shop}/admin/oauth/access_token`, {
       client_id:     process.env.SHOPIFY_API_KEY,
@@ -679,9 +706,9 @@ router.post('/mindbody/webhook', express.json(), async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 router.get('/calendly/connect', authenticateToken, async (req, res) => {
-  const state = Buffer.from(JSON.stringify({
+  const state = signState({
     customerId: req.user.customerId, ts: Date.now()
-  })).toString('base64');
+  });
 
   const url = new URL('https://auth.calendly.com/oauth/authorize');
   url.searchParams.set('client_id',    process.env.CALENDLY_CLIENT_ID);
@@ -697,7 +724,7 @@ router.get('/calendly/callback', async (req, res) => {
   if (error) return res.redirect(`${FE}/dashboard/settings?integration=calendly&error=denied`);
 
   try {
-    const { customerId } = JSON.parse(Buffer.from(state, 'base64').toString());
+    const { customerId } = verifyState(state);
 
     const tokenRes = await axios.post('https://auth.calendly.com/oauth/token',
       new URLSearchParams({
@@ -929,11 +956,11 @@ router.get('/jobber/connect', authenticateToken, async (req, res) => {
     const { locationId } = req.query;
     if (!locationId) return res.status(400).json({ error: 'locationId is required' });
 
-    const state = Buffer.from(JSON.stringify({
+    const state = signState({
       customerId: req.user.customerId,
       locationId,
       ts: Date.now(),
-    })).toString('base64');
+    });
 
     const params = new URLSearchParams({
       client_id:     process.env.JOBBER_CLIENT_ID,
@@ -956,7 +983,7 @@ router.get('/jobber/callback', async (req, res) => {
     const { code, state } = req.query;
     if (!code || !state) return res.status(400).json({ error: 'Missing code or state' });
 
-    const { customerId, locationId } = JSON.parse(Buffer.from(state, 'base64').toString());
+    const { customerId, locationId } = verifyState(state);
 
     // Exchange code for tokens
     const tokenRes = await fetch(JOBBER_TOKEN_URL, {
@@ -1012,13 +1039,13 @@ router.get('/jobber/callback', async (req, res) => {
       await query(
         `UPDATE integrations SET access_token=$1, refresh_token=$2, external_account_id=$3, status='connected', updated_at=NOW()
          WHERE location_id=$4 AND provider='jobber'`,
-        [tokens.access_token, tokens.refresh_token || null, jobberAccountId, locationId]
+        [encrypt(tokens.access_token), tokens.refresh_token ? encrypt(tokens.refresh_token) : null, jobberAccountId, locationId]
       );
     } else {
       await query(
         `INSERT INTO integrations (location_id, provider, access_token, refresh_token, external_account_id, status)
          VALUES ($1,'jobber',$2,$3,$4,'connected')`,
-        [locationId, tokens.access_token, tokens.refresh_token || null, jobberAccountId]
+        [locationId, encrypt(tokens.access_token), tokens.refresh_token ? encrypt(tokens.refresh_token) : null, jobberAccountId]
       );
     }
 
@@ -1175,7 +1202,7 @@ router.post('/jobber/refresh', authenticateToken, async (req, res) => {
         grant_type:    'refresh_token',
         client_id:     process.env.JOBBER_CLIENT_ID,
         client_secret: process.env.JOBBER_CLIENT_SECRET,
-        refresh_token: result.rows[0].refresh_token,
+        refresh_token: safeDecrypt(result.rows[0].refresh_token),
       }),
     });
 
@@ -1185,7 +1212,7 @@ router.post('/jobber/refresh', authenticateToken, async (req, res) => {
     await query(
       `UPDATE integrations SET access_token=$1, refresh_token=$2, updated_at=NOW()
        WHERE location_id=$3 AND provider='jobber'`,
-      [tokens.access_token, tokens.refresh_token || result.rows[0].refresh_token, locationId]
+      [encrypt(tokens.access_token), tokens.refresh_token ? encrypt(tokens.refresh_token) : result.rows[0].refresh_token, locationId]
     );
 
     res.json({ success: true });

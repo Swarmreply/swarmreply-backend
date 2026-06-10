@@ -4,6 +4,7 @@
 // ============================================
 
 const express = require('express');
+const { verifyState } = require('../utils/oauthState');
 const { Resend } = require('resend');
 const router = express.Router();
 const { query } = require('../database/db');
@@ -44,7 +45,7 @@ router.get('/auth/google', (req, res) => {
 // GET /api/auth/google/callback
 // Google redirects here after customer authorizes
 router.get('/auth/google/callback', async (req, res) => {
-  const { code, state: locationId, error } = req.query;
+  const { code, state, error } = req.query;
 
   // Handle user denying access
   if (error) {
@@ -52,7 +53,15 @@ router.get('/auth/google/callback', async (req, res) => {
     return res.redirect(`${process.env.FRONTEND_URL}/dashboard?error=google_denied`);
   }
 
-  if (!code || !locationId) {
+  if (!code || !state) {
+    return res.redirect(`${process.env.FRONTEND_URL}/dashboard?error=invalid_callback`);
+  }
+
+  let locationId;
+  try {
+    ({ locationId } = verifyState(state));
+  } catch (e) {
+    logger.warn('Google OAuth: state verification failed:', e.message);
     return res.redirect(`${process.env.FRONTEND_URL}/dashboard?error=invalid_callback`);
   }
 
