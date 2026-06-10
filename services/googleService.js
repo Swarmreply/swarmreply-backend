@@ -5,6 +5,7 @@
 // ============================================
 
 const { google } = require('googleapis');
+const { signState } = require('../utils/oauthState');
 const { query } = require('../database/db');
 const { encrypt, decrypt } = require('../utils/encryption');
 const logger = require('../utils/logger');
@@ -38,7 +39,7 @@ function getAuthUrl(locationId) {
     access_type: 'offline',    // get refresh token for permanent access
     scope: SCOPES,
     prompt: 'consent',          // force consent screen to get refresh token
-    state: locationId           // passed back after auth to identify which location
+    state: signState({ locationId }) // HMAC-signed; verified in the callback
   });
 }
 
