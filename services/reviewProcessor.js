@@ -16,6 +16,7 @@ const googleService = require('./googleService');
 const aiService = require('./aiService');
 const emailService = require('./emailService');
 const logger = require('../utils/logger');
+const features = require('../config/features');
 
 // ============================================
 // MAIN PROCESSOR
@@ -27,6 +28,10 @@ const logger = require('../utils/logger');
  * Processes all active customer locations
  */
 async function processAllActiveLocations() {
+  if (!features.AUTO_REPLY_ENABLED) {
+    logger.info('Auto-reply is OFF (config/features.js) — skipping review processing cycle');
+    return;
+  }
   logger.info('Starting review processing cycle...');
   const startTime = Date.now();
 
@@ -247,6 +252,10 @@ async function processReview(review, location, businessProfile) {
  * Called hourly — gives failed replies multiple chances
  */
 async function retryFailedReplies() {
+  if (!features.AUTO_REPLY_ENABLED) {
+    logger.info('Auto-reply is OFF (config/features.js) — skipping failed-reply retry');
+    return;
+  }
   logger.info('Checking for failed replies to retry...');
 
   try {
