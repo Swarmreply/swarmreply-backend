@@ -484,6 +484,56 @@ router.put('/account', authenticateToken, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// SUPPORT — POST /api/support
+// In-app support form (dashboard → Support page). Sends the customer's
+// message to the SwarmReply team inbox via Resend with reply_to set to the
+// customer, so replying in Gmail goes straight back to them.
+// Customer identity comes from the DB (not the token) so name/email/plan are
+// current. Light in-memory throttle: max 5 messages per customer per hour.
+// ════════════════════════════════════════════════════════════════════════════
+const _supportSends = new Map(); // customerId -> [timestamps]
+
+router.post('/support', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const subject = String(req.body?.subject || '').trim();
+    const message = String(req.body?.message || '').trim();
+
+    if (!subject || !message) {
+      return res.status(400).json({ error: 'Please add a subject and a message.' });
+    }
+    if (subject.length > 200)  return res.status(400).json({ error: 'Subject is too long (max 200 characters).' });
+    if (message.length > 5000) return res.status(400).json({ error: 'Message is too long (max 5,000 characters).' });
+
+    // Throttle: 5 per customer per rolling hour
+    const now = Date.now();
+    const recent = (_supportSends.get(customerId) || []).filter(t => now - t < 3600000);
+    if (recent.length >= 5) {
+      return res.status(429).json({ error: 'You\'ve reached the limit of 5 messages per hour. Email us directly at hello@swarmreply.com if it\'s urgent.' });
+    }
+
+    // Pull current identity from the DB — token claims can be stale
+    const c = await query('SELECT id, name, email, plan FROM customers WHERE id=$1', [customerId]);
+    if (!c.rows.length) return res.status(404).json({ error: 'Account not found.' });
+
+    const emailService = require('../services/emailService');
+    await emailService.sendSupportRequest({
+      customer: c.rows[0],
+      subject,
+      message,
+    });
+
+    recent.push(now);
+    _supportSends.set(customerId, recent);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('POST /support error:', err.message);
+    // Email provider failed — don't let the message vanish silently
+    res.status(502).json({ error: 'We couldn\'t send your message just now. Please email us directly at hello@swarmreply.com.' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // PULSE — analytics hub. One call returns real aggregates over the customer's
 // reviews / replies / review_requests / survey_responses / campaigns / llm_reports.
 // Headline stats respect ?range= (7d/30d/90d/12m); trend charts use natural
