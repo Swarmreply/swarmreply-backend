@@ -198,6 +198,105 @@ router.get('/portal', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/billing/location-preview
+// What adding ONE more location would cost — shown in the add-location wizard
+// before anything is created or charged. Read-only; Stripe stays the source
+// of truth for the actual proration.
+router.get('/location-preview', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { countActiveLocations, priceBreakdown, PRICING } = require('../services/locationBilling');
+
+    const cr = await query(
+      `SELECT stripe_customer_id, stripe_subscription_id, stripe_price_id
+       FROM customers WHERE id = $1`,
+      [customerId]
+    );
+    const customer = cr.rows[0];
+    if (!customer) return res.status(404).json({ error: 'Customer not found' });
+
+    const current = await countActiveLocations(customerId);
+    const next = current + 1;
+    const atMax = current >= PRICING.maxSelfServe;
+
+    // Billing cycle + remaining fraction of the current period (for the
+    // prorated estimate) from the live subscription.
+    let isAnnual = false;
+    let hasSubscription = false;
+    let periodFraction = null;
+    if (customer.stripe_subscription_id) {
+      try {
+        const sub = await stripe.subscriptions.retrieve(customer.stripe_subscription_id);
+        hasSubscription = ['active', 'trialing', 'past_due'].includes(sub.status);
+        isAnnual =
+          sub.items.data.some(i => i.price?.id === process.env.STRIPE_PRICE_BASE_ANNUAL) ||
+          customer.stripe_price_id === process.env.STRIPE_PRICE_BASE_ANNUAL;
+        if (sub.current_period_start && sub.current_period_end) {
+          const now = Math.floor(Date.now() / 1000);
+          periodFraction = Math.max(0, Math.min(1,
+            (sub.current_period_end - now) / (sub.current_period_end - sub.current_period_start)
+          ));
+        }
+      } catch (e) {
+        logger.warn('location-preview: subscription lookup failed:', e.message);
+      }
+    }
+
+    // Card on file: default payment method, falling back to the first card.
+    let hasPaymentMethod = false;
+    let card = null;
+    if (customer.stripe_customer_id) {
+      try {
+        const sc = await stripe.customers.retrieve(customer.stripe_customer_id, {
+          expand: ['invoice_settings.default_payment_method'],
+        });
+        let pm = sc.invoice_settings?.default_payment_method;
+        if (!pm || typeof pm === 'string') {
+          const pms = await stripe.paymentMethods.list({
+            customer: customer.stripe_customer_id, type: 'card', limit: 1,
+          });
+          pm = pms.data[0] || null;
+        }
+        if (pm?.card) {
+          hasPaymentMethod = true;
+          card = { brand: pm.card.brand, last4: pm.card.last4 };
+        }
+      } catch (e) {
+        logger.warn('location-preview: payment method lookup failed:', e.message);
+      }
+    }
+
+    const currentBreakdown = priceBreakdown(Math.max(current, 1), isAnnual);
+    const nextBreakdown = priceBreakdown(next, isAnnual);
+    const monthlyDelta = current < 1 ? 0 : nextBreakdown.monthly - currentBreakdown.monthly;
+
+    // Rough prorated charge for the remainder of the current period.
+    let prorationEstimate = null;
+    if (periodFraction !== null && monthlyDelta > 0) {
+      const periodCharge = isAnnual ? monthlyDelta * 12 : monthlyDelta;
+      prorationEstimate = Math.round(periodCharge * periodFraction * 100) / 100;
+    }
+
+    res.json({
+      currentLocations: current,
+      newLocationNumber: next,
+      atMax,
+      maxSelfServe: PRICING.maxSelfServe,
+      cycle: isAnnual ? 'annual' : 'monthly',
+      current: currentBreakdown,
+      next: nextBreakdown,
+      monthlyDelta,
+      prorationEstimate,
+      hasSubscription,
+      hasPaymentMethod,
+      card,
+    });
+  } catch (err) {
+    logger.error('Location preview error:', err.message);
+    res.status(500).json({ error: 'Failed to load billing preview' });
+  }
+});
+
 // POST /api/billing/upgrade  — DEPRECATED
 // Tier-based plan switching was replaced by per-location pricing (a single base
 // plan + a DB-driven location add-on quantity, see services/locationBilling.js).

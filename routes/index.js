@@ -82,17 +82,16 @@ router.get('/auth/google/callback', async (req, res) => {
 // GET /api/locations?customerId=xxx
 // Get all locations for a customer
 router.get('/locations', authenticateToken, async (req, res) => {
-  const { customerId } = req.query;
-
-  if (!customerId) {
-    return res.status(400).json({ error: 'customerId is required' });
-  }
+  // SECURITY: scope to the authenticated customer — any customerId in the
+  // query string is ignored so one customer can never list another's locations.
+  const customerId = req.user.customerId || req.user.id;
 
   try {
     const result = await query(
       `SELECT id, business_name, business_type, platform, tone,
               always_include, never_include, contact_email, auto_reply,
-              is_active, last_synced_at, created_at
+              is_active, billing_synced, last_synced_at, created_at,
+              (refresh_token IS NOT NULL) AS google_connected
        FROM locations
        WHERE customer_id = $1
        ORDER BY created_at DESC`,
@@ -106,37 +105,122 @@ router.get('/locations', authenticateToken, async (req, res) => {
 });
 
 // POST /api/locations
-// Create a new location
+// Create a new location — only after the customer has confirmed billing in the
+// add-location wizard. customerId always comes from the token, never the body.
 router.post('/locations', authenticateToken, async (req, res) => {
-  const { customerId, businessName, businessType, platform, contactEmail, tone, isHealthcare } = req.body;
+  const customerId = req.user.customerId || req.user.id;
+  const { businessName, businessType, platform, contactEmail, tone, isHealthcare, idempotencyKey } = req.body;
 
-  if (!customerId || !businessName || !platform) {
-    return res.status(400).json({ error: 'customerId, businessName, and platform are required' });
+  if (!businessName || !platform) {
+    return res.status(400).json({ error: 'businessName and platform are required' });
   }
 
+  const { countActiveLocations, syncLocationBilling, PRICING } = require('../services/locationBilling');
+
   try {
+    // Idempotency: a retried request with the same key returns the original
+    // location instead of creating (and billing) a duplicate.
+    if (idempotencyKey) {
+      const dup = await query(
+        `SELECT id, business_name, platform FROM locations
+         WHERE customer_id = $1 AND idempotency_key = $2`,
+        [customerId, idempotencyKey]
+      );
+      if (dup.rows.length) {
+        return res.status(200).json({ location: dup.rows[0], duplicate: true });
+      }
+    }
+
+    // Self-serve cap — 26+ locations is agency pricing, handled by sales.
+    const activeCount = await countActiveLocations(customerId);
+    if (activeCount >= PRICING.maxSelfServe) {
+      return res.status(409).json({
+        error: `You've reached the ${PRICING.maxSelfServe}-location limit for self-serve plans. Contact us for agency pricing.`,
+        code: 'max_locations'
+      });
+    }
+
     // platform_location_id is NOT NULL in the schema; generate a placeholder for
-    // manually-created locations (mirrors the admin/demo insert). is_active = true.
+    // manually-created locations. billing_synced=false until Stripe confirms.
     const result = await query(
       `INSERT INTO locations
-       (customer_id, business_name, business_type, platform, platform_location_id, contact_email, tone, is_healthcare, is_active)
-       VALUES ($1, $2, $3, $4, 'manual_' || gen_random_uuid()::text, $5, $6, $7, true)
+       (customer_id, business_name, business_type, platform, platform_location_id,
+        contact_email, tone, is_healthcare, is_active, billing_synced, idempotency_key)
+       VALUES ($1, $2, $3, $4, 'manual_' || gen_random_uuid()::text, $5, $6, $7, true, false, $8)
        RETURNING id, business_name, platform`,
-      [customerId, businessName, businessType || null, platform, contactEmail || null, tone || 'warm', isHealthcare || false]
+      [customerId, businessName, businessType || null, platform,
+       contactEmail || null, tone || 'warm', isHealthcare || false, idempotencyKey || null]
     );
 
     logger.info(`New location created: ${businessName} for customer ${customerId}`);
 
-    // Keep Stripe per-location billing in sync with the actual location count.
-    // Fire-and-forget: a billing hiccup must never block creating a location.
-    require('../services/locationBilling')
-      .syncLocationBilling(customerId)
-      .catch(e => logger.warn('Location billing sync after create failed:', e.message));
+    // Sync Stripe now. On success the location is marked billing_synced=true;
+    // on failure it stays false and the scheduler retries hourly (JOB 5).
+    const billing = await syncLocationBilling(customerId);
+    if (!billing.success && !billing.skipped) {
+      logger.warn(`Location billing sync failed for customer ${customerId} — scheduler will retry`);
+    }
 
-    res.status(201).json({ location: result.rows[0] });
+    res.status(201).json({ location: result.rows[0], billing });
   } catch (error) {
+    // Unique-index race on the idempotency key: another request with the same
+    // key won — return the row it created.
+    if (error.code === '23505' && idempotencyKey) {
+      const dup = await query(
+        `SELECT id, business_name, platform FROM locations
+         WHERE customer_id = $1 AND idempotency_key = $2`,
+        [customerId, idempotencyKey]
+      );
+      if (dup.rows.length) return res.status(200).json({ location: dup.rows[0], duplicate: true });
+    }
     logger.error('Create location error:', error.message);
     res.status(500).json({ error: 'Failed to create location', details: error.message });
+  }
+});
+
+// PUT /api/locations/:id/active
+// Activate / deactivate a location. Deactivating automatically reduces the
+// Stripe add-on quantity (prorated credit); reactivating re-checks the cap.
+router.put('/locations/:id/active', authenticateToken, async (req, res) => {
+  const customerId = req.user.customerId || req.user.id;
+  const { active } = req.body;
+
+  if (typeof active !== 'boolean') {
+    return res.status(400).json({ error: 'active (boolean) is required' });
+  }
+
+  const { countActiveLocations, syncLocationBilling, PRICING } = require('../services/locationBilling');
+
+  try {
+    if (active) {
+      const activeCount = await countActiveLocations(customerId);
+      if (activeCount >= PRICING.maxSelfServe) {
+        return res.status(409).json({
+          error: `You've reached the ${PRICING.maxSelfServe}-location limit for self-serve plans. Contact us for agency pricing.`,
+          code: 'max_locations'
+        });
+      }
+    }
+
+    const result = await query(
+      `UPDATE locations
+       SET is_active = $1, billing_synced = false, updated_at = NOW()
+       WHERE id = $2 AND customer_id = $3
+       RETURNING id, business_name, is_active`,
+      [active, req.params.id, customerId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Location not found' });
+    }
+
+    const billing = await syncLocationBilling(customerId);
+    logger.info(`Location ${req.params.id} ${active ? 'activated' : 'deactivated'} by customer ${customerId}`);
+
+    res.json({ location: result.rows[0], billing });
+  } catch (error) {
+    logger.error('Set location active error:', error.message);
+    res.status(500).json({ error: 'Failed to update location' });
   }
 });
 
