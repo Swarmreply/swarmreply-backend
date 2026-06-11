@@ -818,6 +818,10 @@ function getPlanFromPriceId(priceId) {
 const { router: integrationRoutes, handleStripePaymentForReview } = require('./integrations');
 router.use('/integrations', integrationRoutes);
 
+// Zapier app + API-key management — see routes/zapier.js
+const zapierRoutes = require('./zapier');
+router.use('/zapier', zapierRoutes);
+
 // Billing
 const billingRoutes = require('./billing');
 router.use('/billing', billingRoutes);
