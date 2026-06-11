@@ -356,10 +356,52 @@ async function sendPasswordReset({ email, name, resetUrl }) {
   }
 }
 
+/**
+ * sendSupportRequest()
+ * Sends a customer's in-app support message to the SwarmReply team inbox.
+ * reply_to is set to the customer's email so replying in Gmail goes straight
+ * back to them. Throws on failure so the route can tell the customer to
+ * email directly instead of silently losing the message.
+ */
+async function sendSupportRequest({ customer, subject, message }) {
+  const esc = (s) => String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const inbox = process.env.SUPPORT_INBOX || 'nick@swarmreply.com';
+
+  await getResend().emails.send({
+    from:     process.env.EMAIL_FROM || 'SwarmReply <hello@swarmreply.com>',
+    to:       inbox,
+    reply_to: customer.email,
+    subject:  `[Support] ${subject} — ${customer.name || customer.email}`,
+    html: `
+      <div style="font-family: sans-serif; max-width: 640px; margin: 0 auto; padding: 32px 20px;">
+        <h2 style="font-size: 18px; color: #0d0d0d; margin: 0 0 4px;">New support request</h2>
+        <p style="color: #999; font-size: 13px; margin: 0 0 20px;">Sent from the in-app Support page — just hit reply to answer the customer.</p>
+
+        <table style="border-collapse: collapse; font-size: 14px; color: #333; margin-bottom: 24px;">
+          <tr><td style="padding: 4px 16px 4px 0; color: #999;">Customer</td><td style="padding: 4px 0;"><strong>${esc(customer.name)}</strong></td></tr>
+          <tr><td style="padding: 4px 16px 4px 0; color: #999;">Email</td><td style="padding: 4px 0;">${esc(customer.email)}</td></tr>
+          <tr><td style="padding: 4px 16px 4px 0; color: #999;">Plan</td><td style="padding: 4px 0;">${esc(customer.plan || 'unknown')}</td></tr>
+          <tr><td style="padding: 4px 16px 4px 0; color: #999;">Customer ID</td><td style="padding: 4px 0; font-family: monospace; font-size: 12px;">${esc(customer.id)}</td></tr>
+        </table>
+
+        <div style="background: #f8f7f4; border-radius: 12px; padding: 20px 22px;">
+          <div style="font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #999; margin-bottom: 8px;">${esc(subject)}</div>
+          <div style="font-size: 15px; color: #0d0d0d; line-height: 1.6; white-space: pre-wrap;">${esc(message)}</div>
+        </div>
+      </div>
+    `
+  });
+
+  logger.info(`Support request sent from customer ${customer.id} (${customer.email})`);
+}
+
 module.exports = {
   sendWeeklyDigest,
   sendWelcomeEmail,
   sendWelcomeWithCredentials,
   sendConnectionErrorAlert,
-  sendPasswordReset
+  sendPasswordReset,
+  sendSupportRequest
 };
