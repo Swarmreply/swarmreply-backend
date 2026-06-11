@@ -7,6 +7,7 @@
 const cron = require('node-cron');
 const reviewProcessor = require('./services/reviewProcessor');
 const { runDueScans } = require('./scheduler.llm');
+const { resyncPendingBilling } = require('./services/locationBilling');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -80,7 +81,24 @@ function startScheduler() {
     }
   });
 
-  logger.info('Scheduler started — 4 jobs active');
+  // ============================================
+  // JOB 5: Retry pending location-billing syncs
+  // Runs hourly at :15. Any location created or
+  // toggled while Stripe was unreachable stays
+  // billing_synced=false until this reconciles it,
+  // so a billing hiccup can never become free usage.
+  // ============================================
+  cron.schedule('15 * * * *', async () => {
+    try {
+      const n = await resyncPendingBilling();
+      if (n > 0) logger.info(`Scheduler: retried location billing sync for ${n} customer(s)`);
+    } catch (error) {
+      logger.error('Scheduler: billing resync job failed:', error.message);
+      captureError(error, { job: 'billing-resync' });
+    }
+  });
+
+  logger.info('Scheduler started — 5 jobs active');
 }
 
 module.exports = { startScheduler };
