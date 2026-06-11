@@ -297,35 +297,144 @@ router.get('/reviews', authenticateToken, async (req, res) => {
 // GET /api/stats?customerId=xxx
 // Get dashboard statistics for a customer
 router.get('/stats', authenticateToken, async (req, res) => {
-  const { customerId } = req.query;
-
-  if (!customerId) {
-    return res.status(400).json({ error: 'customerId is required' });
-  }
+  // SECURITY: stats are scoped to the authenticated customer — any customerId
+  // in the query string is ignored.
+  const customerId = req.user.customerId || req.user.id;
 
   try {
-    const result = await query(
-      `SELECT
-         COUNT(rv.id) as total_reviews,
-         COUNT(CASE WHEN rv.status = 'replied' THEN 1 END) as total_replied,
-         COUNT(CASE WHEN rv.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as reviews_this_month,
-         COUNT(CASE WHEN rv.status = 'replied' AND rv.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as replied_this_month,
-         ROUND(AVG(rv.star_rating)::numeric, 1) as avg_rating,
-         ROUND(AVG(CASE WHEN rv.status = 'replied' THEN
-           EXTRACT(EPOCH FROM (rp.posted_at - rv.created_at))/3600
-         END)::numeric, 1) as avg_response_hours
-       FROM customers c
-       JOIN locations l ON c.id = l.customer_id
-       JOIN reviews rv ON l.id = rv.location_id
-       LEFT JOIN replies rp ON rv.id = rp.review_id
-       WHERE c.id = $1`,
-      [customerId]
-    );
+    const [core, prev, nps, vis] = await Promise.all([
+      query(
+        `SELECT
+           COUNT(rv.id) as total_reviews,
+           COUNT(CASE WHEN rv.status = 'replied' THEN 1 END) as total_replied,
+           COUNT(CASE WHEN rv.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as reviews_this_month,
+           COUNT(CASE WHEN rv.status = 'replied' AND rv.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as replied_this_month,
+           COUNT(CASE WHEN rv.status = 'replied' AND rv.created_at >= NOW() - INTERVAL '7 days' THEN 1 END) as replied_this_week,
+           COUNT(CASE WHEN rv.status = 'pending' THEN 1 END) as pending_reviews,
+           COUNT(CASE WHEN rv.status = 'flagged' THEN 1 END) as flagged_reviews,
+           ROUND(AVG(rv.star_rating)::numeric, 1) as avg_rating,
+           ROUND(AVG(CASE WHEN rv.status = 'replied' THEN
+             EXTRACT(EPOCH FROM (rp.posted_at - rv.created_at))/3600
+           END)::numeric, 1) as avg_response_hours
+         FROM customers c
+         JOIN locations l ON c.id = l.customer_id
+         JOIN reviews rv ON l.id = rv.location_id
+         LEFT JOIN replies rp ON rv.id = rp.review_id
+         WHERE c.id = $1`,
+        [customerId]
+      ),
+      // Prior 30-day window — for an honest "vs last month" delta
+      query(
+        `SELECT COUNT(rv.id) as reviews_last_month
+         FROM locations l JOIN reviews rv ON l.id = rv.location_id
+         WHERE l.customer_id = $1
+           AND rv.created_at >= NOW() - INTERVAL '60 days'
+           AND rv.created_at <  NOW() - INTERVAL '30 days'`,
+        [customerId]
+      ),
+      // Real NPS (% promoters − % detractors), last 90 days of survey responses
+      query(
+        `SELECT COUNT(*) FILTER (WHERE nps_score >= 9) promoters,
+                COUNT(*) FILTER (WHERE nps_score <= 6) detractors,
+                COUNT(*) total
+         FROM survey_responses
+         WHERE customer_id = $1 AND completed_at >= NOW() - INTERVAL '90 days'`,
+        [customerId]
+      ),
+      // Latest completed AI-visibility scan across this customer's locations
+      query(
+        `SELECT r.visibility_score
+         FROM llm_monitor_runs r
+         JOIN locations l ON l.id = r.location_id
+         WHERE l.customer_id = $1 AND r.status = 'complete'
+         ORDER BY r.completed_at DESC NULLS LAST LIMIT 1`,
+        [customerId]
+      ),
+    ]);
 
-    res.json({ stats: result.rows[0] });
+    const stats = core.rows[0] || {};
+    stats.reviews_last_month = parseInt(prev.rows[0]?.reviews_last_month) || 0;
+
+    const n = nps.rows[0] || {};
+    const npsTotal = parseInt(n.total) || 0;
+    stats.nps_responses = npsTotal;
+    stats.nps_score = npsTotal
+      ? Math.round(100 * ((parseInt(n.promoters) || 0) - (parseInt(n.detractors) || 0)) / npsTotal)
+      : null;
+
+    stats.ai_visibility_score = vis.rows[0]?.visibility_score ?? null;
+
+    res.json({ stats });
   } catch (error) {
     logger.error('Get stats error:', error.message);
     res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// GET /api/grow/stats
+// Real numbers for the Grow page stat cards (review requests + surveys),
+// replacing the hardcoded placeholders. All windows are last 30 days, with
+// the prior 30 days for deltas.
+router.get('/grow/stats', authenticateToken, async (req, res) => {
+  const customerId = req.user.customerId || req.user.id;
+
+  try {
+    const [reqs, reqsPrev, sends, resp, respPrev, routed] = await Promise.all([
+      query(`SELECT COUNT(*) sent, COUNT(*) FILTER (WHERE status='completed') completed
+             FROM review_requests
+             WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+      query(`SELECT COUNT(*) sent, COUNT(*) FILTER (WHERE status='completed') completed
+             FROM review_requests
+             WHERE customer_id = $1
+               AND created_at >= NOW() - INTERVAL '60 days'
+               AND created_at <  NOW() - INTERVAL '30 days'`, [customerId]),
+      query(`SELECT COUNT(*) sent
+             FROM survey_sends ss JOIN locations l ON l.id = ss.location_id
+             WHERE l.customer_id = $1 AND ss.created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+      query(`SELECT COUNT(*) responses, ROUND(AVG(nps_score)::numeric, 1) avg_nps
+             FROM survey_responses
+             WHERE customer_id = $1 AND completed_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+      query(`SELECT ROUND(AVG(nps_score)::numeric, 1) avg_nps
+             FROM survey_responses
+             WHERE customer_id = $1
+               AND completed_at >= NOW() - INTERVAL '60 days'
+               AND completed_at <  NOW() - INTERVAL '30 days'`, [customerId]),
+      query(`SELECT COUNT(*) routed
+             FROM survey_sends ss JOIN locations l ON l.id = ss.location_id
+             WHERE l.customer_id = $1 AND ss.status = 'clicked'
+               AND ss.created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+    ]);
+
+    const i = (v) => parseInt(v) || 0;
+    const r0 = reqs.rows[0] || {}, rp = reqsPrev.rows[0] || {};
+    const sent = i(r0.sent), completed = i(r0.completed);
+    const sentPrev = i(rp.sent), completedPrev = i(rp.completed);
+
+    const surveysSent = i(sends.rows[0]?.sent);
+    const responses = i(resp.rows[0]?.responses);
+    const avgNps = resp.rows[0]?.avg_nps != null ? Number(resp.rows[0].avg_nps) : null;
+    const avgNpsPrev = respPrev.rows[0]?.avg_nps != null ? Number(respPrev.rows[0].avg_nps) : null;
+
+    res.json({
+      requests: {
+        sent,
+        sentDelta: sent - sentPrev,
+        completed,
+        completedDelta: completed - completedPrev,
+        conversionRate: sent ? Math.round((completed / sent) * 100) : null,
+      },
+      surveys: {
+        sent: surveysSent,
+        responses,
+        responseRate: surveysSent ? Math.round((responses / surveysSent) * 100) : null,
+        avgNps,
+        avgNpsDelta: (avgNps != null && avgNpsPrev != null) ? +(avgNps - avgNpsPrev).toFixed(1) : null,
+        promotersRouted: i(routed.rows[0]?.routed),
+      },
+    });
+  } catch (error) {
+    logger.error('Grow stats error:', error.message);
+    res.status(500).json({ error: 'Failed to fetch grow stats' });
   }
 });
 
