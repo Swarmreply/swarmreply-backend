@@ -6,6 +6,7 @@
 
 const { google } = require('googleapis');
 const { signState } = require('../utils/oauthState');
+const { fireNewReview } = require('./zapierHooks');
 const { query } = require('../database/db');
 const { encrypt, decrypt } = require('../utils/encryption');
 const logger = require('../utils/logger');
@@ -220,11 +221,12 @@ async function fetchNewReviews(locationId) {
         // Skip if review already has a reply on Google
         if (review.reviewReply) {
           // Store it but mark as already replied
-          await query(
+          const storedReplied = await query(
             `INSERT INTO reviews
              (location_id, platform_review_id, reviewer_name, star_rating, review_text, review_date, status)
              VALUES ($1, $2, $3, $4, $5, $6, 'replied')
-             ON CONFLICT (platform_review_id) DO NOTHING`,
+             ON CONFLICT (platform_review_id) DO NOTHING
+             RETURNING id, location_id, platform_review_id, reviewer_name, star_rating, review_text, review_date`,
             [
               locationId,
               review.reviewId,
@@ -234,6 +236,10 @@ async function fetchNewReviews(locationId) {
               new Date(review.updateTime)
             ]
           );
+          // Fire Zapier "new review" hooks for genuinely new rows (fire-and-forget)
+          if (storedReplied.rows.length) {
+            fireNewReview(locationId, storedReplied.rows[0]).catch(() => {});
+          }
           continue;
         }
 
@@ -252,6 +258,11 @@ async function fetchNewReviews(locationId) {
             new Date(review.updateTime)
           ]
         );
+
+        // Fire Zapier "new review" hooks (fire-and-forget; never blocks the sync)
+        if (insertResult.rows.length) {
+          fireNewReview(locationId, insertResult.rows[0]).catch(() => {});
+        }
 
         newReviews.push(insertResult.rows[0]);
         logger.info(`New review stored: ${review.reviewId} for ${location.business_name}`);

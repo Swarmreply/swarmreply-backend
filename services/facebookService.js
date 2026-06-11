@@ -24,6 +24,7 @@
 const axios  = require('axios');
 const { query } = require('../database/db');
 const logger = require('../utils/logger');
+const { fireNewReview } = require('./zapierHooks');
 
 const FB_API = 'https://graph.facebook.com/v19.0';
 const APP_ID     = process.env.FACEBOOK_APP_ID;
@@ -176,7 +177,7 @@ async function fetchReviews(locationId) {
          VALUES ($1, 'facebook', $2, $2, $3, $4, $5, $6, $7, 'pending', $8)
          ON CONFLICT (platform_review_id)
          DO NOTHING
-         RETURNING id`,
+         RETURNING id, location_id, platform, reviewer_name, star_rating, review_text, review_date`,
         [
           locationId,
           `fb_${fbId}_${platform.page_id}`,
@@ -189,7 +190,11 @@ async function fetchReviews(locationId) {
         ]
       );
 
-      if (result.rows[0]) newCount++;
+      if (result.rows[0]) {
+        newCount++;
+        // Fire Zapier "new review" hooks (fire-and-forget; never blocks the sync)
+        fireNewReview(locationId, result.rows[0]).catch(() => {});
+      }
     }
 
     // Update last synced
