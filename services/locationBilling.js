@@ -67,6 +67,15 @@ async function countActiveLocations(customerId) {
 // Sync the Stripe add-on quantity to the customer's actual active-location count.
 // Defensive by design: never throws — callers (location create, etc.) must not
 // fail just because a billing sync hiccuped. Returns a result object instead.
+// Mark a customer's locations as reconciled with Stripe (or as needing no
+// reconciliation, e.g. accounts with no subscription).
+async function markBillingSynced(customerId) {
+  await query(
+    `UPDATE locations SET billing_synced = true WHERE customer_id = $1 AND billing_synced = false`,
+    [customerId]
+  ).catch(e => logger.warn('markBillingSynced failed:', e.message));
+}
+
 async function syncLocationBilling(customerId) {
   try {
     const cr = await query(
@@ -77,6 +86,8 @@ async function syncLocationBilling(customerId) {
     const customer = cr.rows[0];
     if (!customer) return { success: false, skipped: true, reason: 'no_customer' };
     if (!customer.stripe_subscription_id) {
+      // Nothing to reconcile — don't leave these in the retry queue forever.
+      await markBillingSynced(customerId);
       return { success: false, skipped: true, reason: 'no_subscription' };
     }
 
@@ -109,6 +120,7 @@ async function syncLocationBilling(customerId) {
     } else if (addonQty > 0) {
       items = [{ price: locationPrice, quantity: addonQty }];
     } else {
+      await markBillingSynced(customerId);
       return { success: true, locationCount, addonQty, changed: false };
     }
 
@@ -117,6 +129,7 @@ async function syncLocationBilling(customerId) {
       proration_behavior: 'create_prorations',
     });
 
+    await markBillingSynced(customerId);
     logger.info(`Location billing synced: customer ${customerId} → ${locationCount} active locations (add-on qty ${addonQty})`);
     return { success: true, locationCount, addonQty, changed: true };
   } catch (err) {
@@ -125,8 +138,25 @@ async function syncLocationBilling(customerId) {
   }
 }
 
+// Retry any customers whose location changes never reached Stripe
+// (created/toggled while Stripe was down, env misconfig, etc.).
+// Called hourly from the scheduler (JOB 5).
+async function resyncPendingBilling() {
+  const r = await query(
+    `SELECT DISTINCT customer_id FROM locations WHERE billing_synced = false`
+  );
+  for (const row of r.rows) {
+    const result = await syncLocationBilling(row.customer_id);
+    if (!result.success && !result.skipped) {
+      logger.warn(`Billing resync still failing for customer ${row.customer_id}: ${result.error || 'unknown'}`);
+    }
+  }
+  return r.rows.length;
+}
+
 module.exports = {
   syncLocationBilling,
+  resyncPendingBilling,
   countActiveLocations,
   estimateMonthly,
   priceBreakdown,
