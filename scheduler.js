@@ -8,6 +8,7 @@ const cron = require('node-cron');
 const reviewProcessor = require('./services/reviewProcessor');
 const { runDueScans } = require('./scheduler.llm');
 const { resyncPendingBilling } = require('./services/locationBilling');
+const { processDueScheduledRequests } = require('./services/integrationService');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -18,6 +19,20 @@ const { captureError } = require('./utils/sentry');
  */
 function startScheduler() {
   logger.info('Starting SwarmReply scheduler...');
+
+  // ============================================
+  // JOB 0: Send due scheduled review requests
+  // Runs every minute — integrations queue sends
+  // with a customer-configured delay (send timing)
+  // ============================================
+  cron.schedule('* * * * *', async () => {
+    try {
+      await processDueScheduledRequests();
+    } catch (error) {
+      logger.error('Scheduler: send-timing sweep failed:', error.message);
+      captureError(error, { job: 'send-timing-sweep' });
+    }
+  });
 
   // ============================================
   // JOB 1: Process new reviews
