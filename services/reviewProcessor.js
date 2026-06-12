@@ -44,7 +44,8 @@ async function processAllActiveLocations() {
        WHERE l.is_active = true
        AND l.platform = 'google'
        AND l.refresh_token IS NOT NULL
-       AND c.status = 'active'`,
+       AND c.status = 'active'
+       AND COALESCE(l.auto_reply, true) = true`,
       []
     );
 
@@ -182,6 +183,21 @@ async function processReview(review, location, businessProfile) {
       [review.id, generatedReply]
     );
     const replyId = replyResult.rows[0].id;
+
+    // Step 2b: Approval mode — park the draft for human sign-off instead of posting.
+    // The Approvals page posts it via POST /approvals/:replyId/approve.
+    if (location.approval_mode === 'approve') {
+      await query(
+        `UPDATE replies SET status = 'pending_approval', updated_at = NOW() WHERE id = $1`,
+        [replyId]
+      );
+      await query(
+        `UPDATE reviews SET status = 'pending_approval', updated_at = NOW() WHERE id = $1`,
+        [review.id]
+      );
+      logger.info(`Reply ${replyId} queued for approval (review ${review.id}, ${location.business_name})`);
+      return;
+    }
 
     // Step 3: Post reply to Google
     try {
