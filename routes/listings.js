@@ -33,7 +33,9 @@ async function ownLocation(req, res) {
 
 async function getDirectories(locationId) {
   const res = await query(
-    'SELECT directory, status, note, verified_at FROM listing_directories WHERE location_id = $1',
+    `SELECT directory, status, note, verified_at, last_checked_at,
+            found_name, found_phone, found_address, diverged_fields
+     FROM listing_directories WHERE location_id = $1`,
     [locationId]
   );
   const byKey = Object.fromEntries(res.rows.map(r => [r.directory, r]));
@@ -42,6 +44,10 @@ async function getDirectories(locationId) {
     status: byKey[d]?.status || 'not_setup',
     note: byKey[d]?.note || null,
     verified_at: byKey[d]?.verified_at || null,
+    last_checked_at: byKey[d]?.last_checked_at || null,
+    found_name: byKey[d]?.found_name || null,
+    found_phone: byKey[d]?.found_phone || null,
+    diverged_fields: byKey[d]?.diverged_fields || null,
   }));
 }
 
@@ -118,6 +124,19 @@ router.put('/:locationId/directories/:directory', authenticateToken, async (req,
   } catch (err) {
     logger.error('Listings directory update error:', err.message);
     res.status(500).json({ error: 'Could not update directory' });
+  }
+});
+
+// POST /api/listings/:locationId/scan — on-demand directory scan
+router.post('/:locationId/scan', authenticateToken, async (req, res) => {
+  try {
+    if (!(await ownLocation(req, res))) return;
+    const { scanLocation } = require('../services/directoryCheckService');
+    const results = await scanLocation(req.params.locationId);
+    res.json({ results, directories: await getDirectories(req.params.locationId) });
+  } catch (err) {
+    logger.error('Listings scan error:', err.message);
+    res.status(500).json({ error: err.message || 'Scan failed' });
   }
 });
 
