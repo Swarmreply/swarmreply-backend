@@ -10,6 +10,7 @@ const { runDueScans } = require('./scheduler.llm');
 const { resyncPendingBilling } = require('./services/locationBilling');
 const { processDueScheduledRequests } = require('./services/integrationService');
 const { runDailySync } = require('./services/listingsService');
+const { runWeeklyDirectoryScan } = require('./services/directoryCheckService');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -31,6 +32,19 @@ function startScheduler() {
     } catch (error) {
       logger.error('Scheduler: listings daily sync failed:', error.message);
       captureError(error, { job: 'listings-daily-sync' });
+    }
+  });
+
+  // ============================================
+  // JOB -0.5: Weekly guided-directory scan — read Yelp,
+  // Foursquare, and the Facebook page for NAP drift
+  // ============================================
+  cron.schedule('0 7 * * 1', async () => {
+    try {
+      await runWeeklyDirectoryScan();
+    } catch (error) {
+      logger.error('Scheduler: directory scan failed:', error.message);
+      captureError(error, { job: 'listings-directory-scan' });
     }
   });
 
