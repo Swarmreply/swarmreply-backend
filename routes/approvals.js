@@ -50,15 +50,14 @@ router.get('/', authenticateToken, async (req, res) => {
          r.review_text,
          r.review_date,
          r.platform,
-         r.google_review_id,
+         r.platform_review_id AS google_review_id,
          rp.id         AS reply_id,
-         rp.reply_text,
+         rp.generated_reply AS reply_text,
          rp.created_at AS drafted_at
        FROM reviews r
        JOIN replies rp ON rp.review_id = r.id
        WHERE r.location_id = $1
-         AND r.status      = 'flagged'
-         AND rp.status     = 'approved'
+         AND rp.status     = 'pending_approval'
        ORDER BY r.review_date DESC`,
       [loc.id]
     );
@@ -83,10 +82,10 @@ router.post('/:replyId/approve', authenticateToken, requireRole(['admin','manage
 
     // Get the reply + review
     const replyRes = await query(
-      `SELECT rp.*, r.google_review_id, r.id as rev_id
+      `SELECT rp.*, r.platform_review_id, r.id as rev_id
        FROM replies rp
        JOIN reviews r ON r.id = rp.review_id
-       WHERE rp.id = $1 AND r.location_id = $2 AND rp.status = 'approved'`,
+       WHERE rp.id = $1 AND r.location_id = $2 AND rp.status = 'pending_approval'`,
       [req.params.replyId, loc.id]
     );
 
@@ -98,11 +97,12 @@ router.post('/:replyId/approve', authenticateToken, requireRole(['admin','manage
 
     // Post to Google
     const googleService = require('../services/googleService');
-    await googleService.postReply(loc, reply.google_review_id, reply.reply_text);
+    await googleService.postReplyToGoogle(loc.id, reply.platform_review_id, reply.generated_reply);
 
     // Update statuses
     await query(
-      `UPDATE replies SET status = 'posted', approved_by = $2,
+      `UPDATE replies SET status = 'posted', posted_reply = generated_reply,
+         posted_at = NOW(), approved_by = $2,
          approved_at = NOW(), updated_at = NOW() WHERE id = $1`,
       [reply.id, req.user.memberId || null]
     );
@@ -132,10 +132,10 @@ router.post('/:replyId/edit', authenticateToken, requireRole(['admin','manager']
     if (!loc) return res.status(404).json({ error: 'Location not found' });
 
     const replyRes = await query(
-      `SELECT rp.*, r.google_review_id, r.id as rev_id
+      `SELECT rp.*, r.platform_review_id, r.id as rev_id
        FROM replies rp
        JOIN reviews r ON r.id = rp.review_id
-       WHERE rp.id = $1 AND r.location_id = $2 AND rp.status = 'approved'`,
+       WHERE rp.id = $1 AND r.location_id = $2 AND rp.status = 'pending_approval'`,
       [req.params.replyId, loc.id]
     );
 
@@ -147,12 +147,12 @@ router.post('/:replyId/edit', authenticateToken, requireRole(['admin','manager']
 
     // Post edited text to Google
     const googleService = require('../services/googleService');
-    await googleService.postReply(loc, reply.google_review_id, replyText.trim());
+    await googleService.postReplyToGoogle(loc.id, reply.platform_review_id, replyText.trim());
 
-    // Save edited text + mark posted
+    // Save edited text + mark posted (generated_reply keeps the AI draft for history)
     await query(
-      `UPDATE replies SET reply_text = $2, status = 'posted',
-         approved_by = $3, approved_at = NOW(), updated_at = NOW()
+      `UPDATE replies SET posted_reply = $2, status = 'posted',
+         posted_at = NOW(), approved_by = $3, approved_at = NOW(), updated_at = NOW()
        WHERE id = $1`,
       [reply.id, replyText.trim(), req.user.memberId || null]
     );
@@ -182,7 +182,7 @@ router.post('/:replyId/reject', authenticateToken, requireRole(['admin','manager
       `SELECT rp.*, r.id as rev_id
        FROM replies rp
        JOIN reviews r ON r.id = rp.review_id
-       WHERE rp.id = $1 AND r.location_id = $2 AND rp.status = 'approved'`,
+       WHERE rp.id = $1 AND r.location_id = $2 AND rp.status = 'pending_approval'`,
       [req.params.replyId, loc.id]
     );
 
