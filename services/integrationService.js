@@ -139,12 +139,11 @@ async function markEventProcessed(eventId, reviewRequestSent, error = null) {
 // ── REVIEW REQUEST TRIGGER ────────────────────────────────────────────────────
 
 /**
- * triggerReviewRequest
- * Called by every integration when a qualifying event fires.
- * Gets the default template for the location and sends immediately
- * (or after a configured delay).
+ * executeSend — performs the actual send (template lookup + email/SMS).
+ * countTrigger=false when called from the scheduler sweep, since the
+ * trigger was already counted when the event was queued.
  */
-async function triggerReviewRequest(integration, contact, eventId) {
+async function executeSend(integration, contact, eventId, countTrigger = true) {
   try {
     // Get default template for this location
     const tmplRes = await query(
@@ -178,14 +177,14 @@ async function triggerReviewRequest(integration, contact, eventId) {
     // Update stats
     await query(
       `UPDATE integrations
-       SET triggers_received = triggers_received + 1,
+       SET triggers_received = triggers_received + CASE WHEN $4 THEN 1 ELSE 0 END,
            requests_sent     = requests_sent + CASE WHEN $2 THEN 1 ELSE 0 END,
            last_triggered_at = NOW(),
            last_error        = CASE WHEN $2 THEN NULL ELSE $3 END,
            last_error_at     = CASE WHEN $2 THEN NULL ELSE NOW() END,
            updated_at        = NOW()
        WHERE id = $1`,
-      [integration.id, result.success, result.error || null]
+      [integration.id, result.success, result.error || null, countTrigger]
     );
 
     if (eventId) {
@@ -194,7 +193,7 @@ async function triggerReviewRequest(integration, contact, eventId) {
 
     return result;
   } catch (err) {
-    logger.error(`triggerReviewRequest error [${integration.provider}]:`, err.message);
+    logger.error(`executeSend error [${integration.provider}]:`, err.message);
     await query(
       `UPDATE integrations SET
          triggers_received = triggers_received + 1,
@@ -209,9 +208,130 @@ async function triggerReviewRequest(integration, contact, eventId) {
   }
 }
 
+/**
+ * delayedSendAt — anchor (Date | ISO string | null) + the integration's
+ * configured delay_minutes. Null anchor = now.
+ */
+function delayedSendAt(integration, anchor = null) {
+  const base = anchor ? new Date(anchor) : new Date();
+  const safeBase = isNaN(base.getTime()) ? new Date() : base;
+  const delayMin = Number.isFinite(Number(integration.delay_minutes))
+    ? Number(integration.delay_minutes) : 60;
+  return new Date(safeBase.getTime() + delayMin * 60 * 1000);
+}
+
+/**
+ * triggerReviewRequest — entry point for every integration webhook.
+ * opts.sendAt   — when to send (Date). Past/near-now sends immediately.
+ * opts.externalRef — provider event ref so cancellations can withdraw it.
+ */
+async function triggerReviewRequest(integration, contact, eventId, opts = {}) {
+  const { sendAt = null, externalRef = null } = opts;
+
+  // Immediate path (no delay configured, or anchor already passed)
+  if (!sendAt || sendAt.getTime() <= Date.now() + 5000) {
+    return executeSend(integration, contact, eventId, true);
+  }
+
+  // Scheduled path
+  await query(
+    `INSERT INTO scheduled_review_requests
+       (integration_id, provider, contact, event_id, external_ref, send_at)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [integration.id, integration.provider, JSON.stringify(contact),
+     eventId != null ? String(eventId) : null, externalRef, sendAt]
+  );
+  await query(
+    `UPDATE integrations
+     SET triggers_received = triggers_received + 1,
+         last_triggered_at = NOW(), updated_at = NOW()
+     WHERE id = $1`,
+    [integration.id]
+  );
+  logger.info(`Scheduled ${integration.provider} review request for ${sendAt.toISOString()}`);
+  return { success: true, scheduled: true, sendAt };
+}
+
+/**
+ * cancelScheduledRequest — withdraw a pending send (e.g. appointment canceled).
+ */
+async function cancelScheduledRequest(provider, externalRef) {
+  if (!externalRef) return 0;
+  const res = await query(
+    `UPDATE scheduled_review_requests
+     SET status='canceled' WHERE provider=$1 AND external_ref=$2 AND status='pending'
+     RETURNING id`,
+    [provider, externalRef]
+  );
+  return res.rows.length;
+}
+
+/**
+ * rescheduleScheduledRequest — move a pending send (e.g. appointment rescheduled).
+ * Returns true if an existing pending row was moved.
+ */
+async function rescheduleScheduledRequest(provider, externalRef, newSendAt) {
+  if (!externalRef) return false;
+  const res = await query(
+    `UPDATE scheduled_review_requests
+     SET send_at=$3 WHERE provider=$1 AND external_ref=$2 AND status='pending'
+     RETURNING id`,
+    [provider, externalRef, newSendAt]
+  );
+  return res.rows.length > 0;
+}
+
+/**
+ * processDueScheduledRequests — scheduler sweep (every minute).
+ * Claims due rows first (pending → sending) so overlapping sweeps can't double-send.
+ */
+async function processDueScheduledRequests() {
+  const due = await query(
+    `UPDATE scheduled_review_requests
+     SET status='sending'
+     WHERE id IN (
+       SELECT id FROM scheduled_review_requests
+       WHERE status='pending' AND send_at <= NOW()
+       ORDER BY send_at LIMIT 50
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING *`
+  );
+  for (const row of due.rows) {
+    try {
+      const integRes = await query(
+        `SELECT i.*, l.customer_id, l.business_name, l.business_type
+         FROM integrations i JOIN locations l ON l.id = i.location_id
+         WHERE i.id = $1`,
+        [row.integration_id]
+      );
+      const integration = integRes.rows[0];
+      if (!integration || integration.status !== 'connected') {
+        await query(`UPDATE scheduled_review_requests SET status='canceled',
+          error='integration disconnected' WHERE id=$1`, [row.id]);
+        continue;
+      }
+      const contact = typeof row.contact === 'string' ? JSON.parse(row.contact) : row.contact;
+      const result = await executeSend(integration, contact, row.event_id, false);
+      await query(
+        `UPDATE scheduled_review_requests
+         SET status=$2, error=$3, sent_at=NOW() WHERE id=$1`,
+        [row.id, result.success ? 'sent' : 'failed', result.error || null]
+      );
+    } catch (err) {
+      logger.error('processDueScheduledRequests row error:', err.message);
+      await query(`UPDATE scheduled_review_requests SET status='failed', error=$2 WHERE id=$1`,
+        [row.id, err.message]).catch(() => {});
+    }
+  }
+  if (due.rows.length) logger.info(`Send-timing sweep: processed ${due.rows.length} due request(s)`);
+}
+
 module.exports = {
   saveIntegration, getIntegration, getIntegrationByProvider,
   disconnectIntegration, listIntegrations,
   isDuplicate, logEvent, markEventProcessed,
-  triggerReviewRequest,
+  triggerReviewRequest, delayedSendAt,
+  cancelScheduledRequest, rescheduleScheduledRequest,
+  processDueScheduledRequests,
 };
