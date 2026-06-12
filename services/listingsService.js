@@ -837,6 +837,7 @@ function sleep(ms) {
 }
 
 module.exports = {
+  normalizeString, normalizePhone, normalizeUrl, buildFullAddress,
   runDailySync,
   syncLocation,
   pushToAllPlatforms,
