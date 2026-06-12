@@ -640,6 +640,16 @@ async function getListingsDashboard(locationId) {
     }
   }
 
+  // Google is connected the moment the location has OAuth — promote it
+  await query(
+    `UPDATE listing_platforms lp SET status = 'connected', updated_at = NOW()
+     FROM locations l
+     WHERE lp.location_id = $1 AND lp.platform = 'google'
+       AND lp.status = 'not_connected'
+       AND l.id = lp.location_id AND l.refresh_token IS NOT NULL`,
+    [locationId]
+  );
+
   // Reload after ensuring all exist
   const freshPlatforms = await query(
     'SELECT * FROM listing_platforms WHERE location_id = $1 ORDER BY platform',
