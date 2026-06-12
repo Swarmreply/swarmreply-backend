@@ -34,7 +34,8 @@ const { auditLog }          = require('../middleware/audit');
 const {
   saveIntegration, getIntegration, getIntegrationByProvider,
   disconnectIntegration, listIntegrations,
-  isDuplicate, logEvent, triggerReviewRequest,
+  isDuplicate, logEvent, triggerReviewRequest, delayedSendAt,
+  cancelScheduledRequest, rescheduleScheduledRequest,
 } = require('../services/integrationService');
 const logger = require('../utils/logger');
 const { captureError } = require('../utils/sentry');
@@ -183,7 +184,7 @@ async function handleStripePaymentForReview(stripeCustomerId, amount, currency, 
       phone: null,
     };
 
-    await triggerReviewRequest(integration, contact, null);
+    await triggerReviewRequest(integration, contact, null, { sendAt: delayedSendAt(integration) });
     logger.info(`Stripe review trigger fired for ${customerEmail}`);
   } catch (err) {
     logger.error('Stripe review trigger error:', err.message);
@@ -325,7 +326,7 @@ router.post('/square/webhook', express.raw({ type: '*/*' }), async (req, res) =>
       } catch (e) { /* Use what we have */ }
     }
 
-    await triggerReviewRequest(integration, { name, email, phone }, eventId);
+    await triggerReviewRequest(integration, { name, email, phone }, eventId, { sendAt: delayedSendAt(integration) });
   } catch (err) {
     logger.error('Square webhook error:', err.message);
   }
@@ -480,7 +481,7 @@ router.post('/hubspot/webhook', async (req, res) => {
         };
 
         if (!contact.email && !contact.phone) continue;
-        await triggerReviewRequest(integration, contact, eventId);
+        await triggerReviewRequest(integration, contact, eventId, { sendAt: delayedSendAt(integration) });
       } catch (fetchErr) {
         logger.error('HubSpot contact fetch error:', fetchErr.message);
       }
@@ -602,7 +603,7 @@ router.post('/shopify/webhook', express.raw({ type: 'application/json' }), async
     };
 
     if (!contact.email && !contact.phone) return;
-    await triggerReviewRequest(integration, contact, eventId);
+    await triggerReviewRequest(integration, contact, eventId, { sendAt: delayedSendAt(integration) });
   } catch (err) {
     logger.error('Shopify webhook error:', err.message);
   }
@@ -693,7 +694,7 @@ router.post('/mindbody/webhook', express.json(), async (req, res) => {
     };
 
     if (!contact.email && !contact.phone) return;
-    await triggerReviewRequest(integration, contact, eventId);
+    await triggerReviewRequest(integration, contact, eventId, { sendAt: delayedSendAt(integration) });
   } catch (err) {
     logger.error('Mindbody webhook error:', err.message);
   }
@@ -798,10 +799,17 @@ router.post('/calendly/webhook', express.json(), async (req, res) => {
     }
 
     const { event, payload } = req.body;
-    if (event !== 'invitee.created') return; // only trigger on booking, not cancel
-
     const invitee = payload?.invitee;
     if (!invitee) return;
+
+    // Appointment canceled → withdraw any pending scheduled request
+    if (event === 'invitee.canceled') {
+      const ref = `calendly_${invitee.uri?.split('/').pop()}`;
+      const n = await cancelScheduledRequest('calendly', ref);
+      if (n) logger.info(`Calendly: canceled ${n} pending review request (${ref})`);
+      return;
+    }
+    if (event !== 'invitee.created') return;
 
     // Find integration by user URI
     const hostUri = payload?.event_type?.owner;
@@ -821,7 +829,15 @@ router.post('/calendly/webhook', express.json(), async (req, res) => {
     };
 
     if (!contact.email && !contact.phone) return;
-    await triggerReviewRequest(integration, contact, eventId);
+
+    // Anchor to when the appointment ENDS (booking time would ask for a
+    // review before the visit even happens). The delay counts from there.
+    const apptEnd = payload?.scheduled_event?.end_time
+                 || payload?.event?.end_time || null;
+    await triggerReviewRequest(integration, contact, eventId, {
+      sendAt: delayedSendAt(integration, apptEnd),
+      externalRef: extId,
+    });
   } catch (err) {
     logger.error('Calendly webhook error:', err.message);
   }
@@ -890,7 +906,14 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
 
   try {
     const { action, id } = req.body;
-    if (action !== 'scheduled' && action !== 'rescheduled') return;
+    if (!['scheduled', 'rescheduled', 'canceled'].includes(action)) return;
+
+    // Appointment canceled → withdraw any pending scheduled request
+    if (action === 'canceled') {
+      const n = await cancelScheduledRequest('acuity', `acuity_appt_${id}`);
+      if (n) logger.info(`Acuity: canceled ${n} pending review request (appt ${id})`);
+      return;
+    }
 
     // B2: identify the integration from the per-integration target URL.
     // Removed the old `getIntegrationByProvider('acuity', {})` fallback, which
@@ -920,8 +943,40 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
     }
 
     const extId = `acuity_appt_${id}`;
-    if (await isDuplicate('acuity', extId)) return;
-    const eventId = await logEvent(integration.id, 'acuity', 'appointment.scheduled', extId, req.body);
+    if (action === 'scheduled' && await isDuplicate('acuity', extId)) return;
+    const eventId = await logEvent(integration.id, 'acuity', `appointment.${action}`, extId, req.body);
+
+    // Fetch the appointment from Acuity for its end time (webhook payload is
+    // minimal). Anchor = appointment end; the customer's delay counts from there.
+    let apptEnd = null;
+    try {
+      const userId = integration.extra_data?.user_id
+                  || integration.extra_data?.acuity_user_id;
+      const apiKey = integration.access_token ? decrypt(integration.access_token) : null;
+      if (userId && apiKey) {
+        const ar = await axios.get(`https://acuityscheduling.com/api/v1/appointments/${id}`, {
+          auth: { username: String(userId), password: apiKey }, timeout: 8000,
+        });
+        const appt = ar.data;
+        if (appt?.datetime) {
+          const durationMin = Number(appt.duration) || 0;
+          apptEnd = new Date(new Date(appt.datetime).getTime() + durationMin * 60 * 1000);
+        }
+      }
+    } catch (e) {
+      logger.warn(`Acuity: could not fetch appointment ${id} for timing (${e.message}) — delaying from now`);
+    }
+
+    // Rescheduled → move the existing pending send instead of creating another
+    if (action === 'rescheduled') {
+      const moved = await rescheduleScheduledRequest('acuity', extId, delayedSendAt(integration, apptEnd));
+      if (moved) {
+        logger.info(`Acuity: rescheduled pending review request (appt ${id})`);
+        return;
+      }
+      // No pending row (already sent, or predates this feature) — fall through
+      // and let dedup-by-extId in logEvent guard double inserts naturally.
+    }
 
     const contact = {
       name:  [req.body.firstName, req.body.lastName].filter(Boolean).join(' ') || 'Client',
@@ -930,7 +985,10 @@ router.post('/acuity/webhook', express.json(), async (req, res) => {
     };
 
     if (!contact.email && !contact.phone) return;
-    await triggerReviewRequest(integration, contact, eventId);
+    await triggerReviewRequest(integration, contact, eventId, {
+      sendAt: delayedSendAt(integration, apptEnd),
+      externalRef: extId,
+    });
   } catch (err) {
     logger.error('Acuity webhook error:', err.message);
   }
@@ -1168,7 +1226,7 @@ router.post('/jobber/webhook', async (req, res) => {
         name:  client.name || email.split('@')[0] || 'Customer',
         email,
         phone: client?.phones?.[0]?.number || null,
-      }, eventId);
+      }, eventId, { sendAt: delayedSendAt(integration) });
       logger.info(`Jobber ${topic}: review request triggered for ${email}`);
       return;
     }
