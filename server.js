@@ -209,6 +209,7 @@ app.use((req, res, next) => {
 
 app.use('/api/admin/login', adminLimiter)
 app.use('/api/webchat', webchatRoutes);
+app.use('/api/listings', require('./routes/listings'));
 app.use('/api', routes);
 app.use('/api/admin', adminRoutes);
 

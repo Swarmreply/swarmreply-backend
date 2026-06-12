@@ -9,6 +9,7 @@ const reviewProcessor = require('./services/reviewProcessor');
 const { runDueScans } = require('./scheduler.llm');
 const { resyncPendingBilling } = require('./services/locationBilling');
 const { processDueScheduledRequests } = require('./services/integrationService');
+const { runDailySync } = require('./services/listingsService');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -19,6 +20,19 @@ const { captureError } = require('./utils/sentry');
  */
 function startScheduler() {
   logger.info('Starting SwarmReply scheduler...');
+
+  // ============================================
+  // JOB -1: Daily listings sync — fetch each platform,
+  // detect NAP divergences, refresh consistency scores
+  // ============================================
+  cron.schedule('0 6 * * *', async () => {
+    try {
+      await runDailySync();
+    } catch (error) {
+      logger.error('Scheduler: listings daily sync failed:', error.message);
+      captureError(error, { job: 'listings-daily-sync' });
+    }
+  });
 
   // ============================================
   // JOB 0: Send due scheduled review requests
