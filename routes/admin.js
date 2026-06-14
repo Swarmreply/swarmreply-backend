@@ -10,26 +10,56 @@ const { query } = require('../database/db');
 const logger  = require('../utils/logger');
 const jwt     = require('jsonwebtoken');
 const { authenticator } = require('otplib');
+const bcrypt  = require('bcryptjs');
 const QRCode  = require('qrcode');
 const { estimateMonthly, syncLocationBilling } = require('../services/locationBilling');
 
 // ── ADMIN AUTH MIDDLEWARE ─────────────────────
-function requireAdmin(req, res, next) {
+// Admin-panel tokens carry scope:'admin'. Customer tokens never do (they have
+// roles like 'owner'/'manager'/'staff' but no admin scope), so they can't reach
+// these endpoints. The env owner uses role:'superadmin' (also accepted).
+function decodeAuth(req) {
   const auth = req.headers['authorization'];
-  if (!auth || !auth.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  try {
-    const token = auth.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.role !== 'superadmin') {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    req.admin = decoded;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
+  if (!auth || !auth.startsWith('Bearer ')) return null;
+  try { return jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET); }
+  catch (e) { return null; }
+}
+
+function requireAdmin(req, res, next) {
+  const d = decodeAuth(req);
+  if (!d) return res.status(401).json({ error: 'Unauthorized' });
+  if (d.scope !== 'admin' && d.role !== 'superadmin') return res.status(403).json({ error: 'Forbidden' });
+  req.admin = d;
+  next();
+}
+
+// Owner-only (env owner, or a DB admin whose role is 'owner').
+function requireOwner(req, res, next) {
+  const d = decodeAuth(req);
+  if (!d) return res.status(401).json({ error: 'Unauthorized' });
+  const isOwner = d.role === 'superadmin' || (d.scope === 'admin' && d.role === 'owner');
+  if (!isOwner) return res.status(403).json({ error: 'Owner access required' });
+  req.admin = d;
+  next();
+}
+
+// Short-lived provisional token used only during first-login account setup.
+function requireSetup(req, res, next) {
+  const d = decodeAuth(req);
+  if (!d || d.scope !== 'admin_setup' || !d.sub) return res.status(401).json({ error: 'Setup session expired' });
+  req.setupUser = d;
+  next();
+}
+
+// A valid-format bcrypt hash to compare against when no user is found, so login
+// timing doesn't leak whether an email exists.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12);
+function genTempPassword() {
+  return crypto.randomBytes(9).toString('base64').replace(/[+/=]/g, '').slice(0, 12) + '!7';
+}
+async function adminAudit(action, details) {
+  try { await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)', [null, action, JSON.stringify(details || {})]); }
+  catch (e) { /* audit is best-effort; never block the operation */ }
 }
 
 // ── ADMIN LOGIN ───────────────────────────────
@@ -53,35 +83,137 @@ router.post('/login', async (req, res) => {
     return res.status(500).json({ error: 'Admin login is not configured' });
   }
 
-  const emailOk = typeof email === 'string' && email.toLowerCase().trim() === ADMIN_EMAIL.toLowerCase().trim();
-  const passOk  = typeof password === 'string' && safeEqual(password, ADMIN_PASS);
-  if (!emailOk || !passOk) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+  const emailIn = typeof email === 'string' ? email.toLowerCase().trim() : '';
+  const isEnvOwner = emailIn === ADMIN_EMAIL.toLowerCase().trim();
+
+  // ── 1. ENV OWNER (the permanent, un-lockoutable account) ──────────
+  if (isEnvOwner) {
+    const passOk = typeof password === 'string' && safeEqual(password, ADMIN_PASS);
+    if (!passOk) return res.status(401).json({ error: 'Invalid credentials' });
+
+    // Second factor — enforced only once ADMIN_TOTP_SECRET is set in the env.
+    const totpSecret = process.env.ADMIN_TOTP_SECRET;
+    if (totpSecret) {
+      const t = code != null ? String(code).trim() : '';
+      if (!/^\d{6}$/.test(t)) return res.status(401).json({ error: 'Authenticator code required', twofa: true });
+      let valid = false;
+      try { valid = authenticator.verify({ token: t, secret: totpSecret }); } catch (e) { valid = false; }
+      if (!valid) return res.status(401).json({ error: 'Invalid authenticator code', twofa: true });
+    }
+
+    const token = jwt.sign(
+      { email: ADMIN_EMAIL, role: 'superadmin', scope: 'admin' },
+      process.env.JWT_SECRET,
+      { expiresIn: '12h' }
+    );
+    logger.info(`Admin login (env owner): ${ADMIN_EMAIL}`);
+    return res.json({ token });
   }
 
-  // Second factor — enforced only once ADMIN_TOTP_SECRET is set in the environment.
-  // Before enrollment it's a no-op, so this can never lock the admin out.
-  const totpSecret = process.env.ADMIN_TOTP_SECRET;
-  if (totpSecret) {
-    const t = code != null ? String(code).trim() : '';
-    if (!/^\d{6}$/.test(t)) {
-      return res.status(401).json({ error: 'Authenticator code required', twofa: true });
-    }
-    let valid = false;
-    try { valid = authenticator.verify({ token: t, secret: totpSecret }); } catch (e) { valid = false; }
-    if (!valid) {
-      return res.status(401).json({ error: 'Invalid authenticator code', twofa: true });
-    }
+  // ── 2. DB ADMIN USER (employees / co-founder) ─────────────────────
+  let user = null;
+  try {
+    const r = await query('SELECT * FROM admin_users WHERE LOWER(email) = $1', [emailIn]);
+    user = r.rows[0] || null;
+  } catch (e) {
+    // Table may not exist yet (migration not run) — treat as no DB users.
+    logger.error('admin_users lookup failed: ' + e.message);
   }
 
+  // Compare against a dummy hash when no user, so timing doesn't leak existence.
+  const passwordValid = await bcrypt.compare(String(password || ''), user ? user.password_hash : DUMMY_HASH);
+  if (!user || !passwordValid) return res.status(401).json({ error: 'Invalid credentials' });
+  if (user.status !== 'active') return res.status(403).json({ error: 'This admin account has been suspended. Contact the owner.' });
+
+  // First login: must set their own password and/or enrol their own 2FA.
+  if (user.must_change_password || user.must_setup_2fa || !user.totp_secret) {
+    const setupToken = jwt.sign(
+      { sub: user.id, email: user.email, scope: 'admin_setup' },
+      process.env.JWT_SECRET,
+      { expiresIn: '20m' }
+    );
+    return res.json({
+      setupToken,
+      mustChangePassword: !!user.must_change_password,
+      mustSetup2fa: !!(user.must_setup_2fa || !user.totp_secret),
+      name: user.name || ''
+    });
+  }
+
+  // Normal login: per-user 2FA is required.
+  const t = code != null ? String(code).trim() : '';
+  if (!/^\d{6}$/.test(t)) return res.status(401).json({ error: 'Authenticator code required', twofa: true });
+  let valid = false;
+  try { valid = authenticator.verify({ token: t, secret: user.totp_secret }); } catch (e) { valid = false; }
+  if (!valid) return res.status(401).json({ error: 'Invalid authenticator code', twofa: true });
+
+  try { await query('UPDATE admin_users SET last_login_at = NOW() WHERE id = $1', [user.id]); } catch (e) {}
   const token = jwt.sign(
-    { email: ADMIN_EMAIL, role: 'superadmin' },
+    { sub: user.id, email: user.email, role: user.role, scope: 'admin' },
     process.env.JWT_SECRET,
     { expiresIn: '12h' }
   );
-
-  logger.info(`Admin login: ${ADMIN_EMAIL}`);
+  logger.info(`Admin login (db user): ${user.email} [${user.role}]`);
   res.json({ token });
+});
+
+// ── FIRST-LOGIN ACCOUNT SETUP (provisional token only) ────────────
+// Set a new password.
+router.post('/account/setup-password', requireSetup, async (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!newPassword || String(newPassword).length < 10) {
+    return res.status(400).json({ error: 'Password must be at least 10 characters.' });
+  }
+  const hash = await bcrypt.hash(String(newPassword), 12);
+  await query('UPDATE admin_users SET password_hash = $1, must_change_password = FALSE, updated_at = NOW() WHERE id = $2', [hash, req.setupUser.sub]);
+  res.json({ success: true });
+});
+
+// Generate a 2FA secret + QR for this user (not saved until confirmed).
+router.post('/account/setup-2fa', requireSetup, async (req, res) => {
+  try {
+    const secret  = authenticator.generateSecret();
+    const otpauth = authenticator.keyuri(req.setupUser.email || 'admin', 'SwarmReply Admin', secret);
+    const qr      = await QRCode.toDataURL(otpauth, { margin: 1, width: 220 });
+    res.json({ secret, qr });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not generate a 2FA secret' });
+  }
+});
+
+// Confirm the code, save the secret to this user, finish setup, return a real token.
+router.post('/account/setup-2fa/confirm', requireSetup, async (req, res) => {
+  const { secret, code } = req.body || {};
+  const t = code != null ? String(code).trim() : '';
+  if (!secret || !/^\d{6}$/.test(t)) return res.status(400).json({ error: 'A secret and 6-digit code are required.' });
+  let valid = false;
+  try { valid = authenticator.verify({ token: t, secret: String(secret).trim() }); } catch (e) { valid = false; }
+  if (!valid) return res.json({ valid: false });
+
+  const r = await query('SELECT email, role, must_change_password FROM admin_users WHERE id = $1', [req.setupUser.sub]);
+  const u = r.rows[0];
+  if (!u) return res.status(404).json({ error: 'Account not found.' });
+  if (u.must_change_password) return res.status(400).json({ valid: false, error: 'Set your password first.' });
+
+  await query('UPDATE admin_users SET totp_secret = $1, must_setup_2fa = FALSE, last_login_at = NOW(), updated_at = NOW() WHERE id = $2', [String(secret).trim(), req.setupUser.sub]);
+  const token = jwt.sign(
+    { sub: req.setupUser.sub, email: u.email, role: u.role, scope: 'admin' },
+    process.env.JWT_SECRET,
+    { expiresIn: '12h' }
+  );
+  await adminAudit('admin_user_self_setup_complete', { id: req.setupUser.sub, email: u.email });
+  res.json({ valid: true, token });
+});
+
+// Who am I? Lets the UI gate owner-only features.
+router.get('/me', requireAdmin, (req, res) => {
+  const role = req.admin.role || 'superadmin';
+  res.json({
+    email: req.admin.email,
+    role,
+    isOwner: role === 'superadmin' || role === 'owner',
+    isEnvOwner: role === 'superadmin'
+  });
 });
 
 // ── ADMIN 2FA (TOTP) ──────────────────────────
@@ -612,6 +744,102 @@ router.delete('/team/:memberId', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Could not remove member' });
   }
 });
+
+
+// ── ADMIN USER MANAGEMENT (owner only) ────────────────────────────
+const ADMIN_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// List all DB admin users.
+router.get('/admin-users', requireOwner, async (req, res) => {
+  try {
+    const r = await query(
+      `SELECT id, email, name, role, status,
+              (totp_secret IS NOT NULL) AS twofa_enabled,
+              must_change_password, must_setup_2fa, last_login_at, created_at
+         FROM admin_users ORDER BY created_at ASC`);
+    res.json({ users: r.rows });
+  } catch (e) {
+    res.status(500).json({ error: 'Could not load admin users. Has the admin_users migration been run?' });
+  }
+});
+
+// Create a new admin user with a temporary password (returned once).
+router.post('/admin-users', requireOwner, async (req, res) => {
+  const { email, name, role } = req.body || {};
+  const e = String(email || '').toLowerCase().trim();
+  if (!ADMIN_EMAIL_RE.test(e)) return res.status(400).json({ error: 'A valid email is required.' });
+  const r = role === 'owner' ? 'owner' : 'member';
+  const tempPassword = genTempPassword();
+  const hash = await bcrypt.hash(tempPassword, 12);
+  try {
+    const ins = await query(
+      `INSERT INTO admin_users (email, name, password_hash, role, status, must_change_password, must_setup_2fa)
+       VALUES ($1,$2,$3,$4,'active',TRUE,TRUE) RETURNING id`,
+      [e, (name || '').trim() || null, hash, r]);
+    await adminAudit('admin_user_created', { id: ins.rows[0].id, email: e, role: r, by: req.admin.email });
+    res.json({ success: true, id: ins.rows[0].id, email: e, role: r, tempPassword });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'An admin user with that email already exists.' });
+    res.status(500).json({ error: 'Could not create the admin user.' });
+  }
+});
+
+// Change a user's role.
+router.patch('/admin-users/:id/role', requireOwner, async (req, res) => {
+  const role = req.body && req.body.role === 'owner' ? 'owner' : 'member';
+  try {
+    const r = await query('UPDATE admin_users SET role=$1, updated_at=NOW() WHERE id=$2 RETURNING email', [role, req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Admin user not found.' });
+    await adminAudit('admin_user_role_changed', { id: req.params.id, role, by: req.admin.email });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Could not update role.' }); }
+});
+
+// Suspend / reactivate. Owners can't suspend themselves.
+router.patch('/admin-users/:id/suspend', requireOwner, async (req, res) => {
+  if (req.admin.sub && req.admin.sub === req.params.id) return res.status(400).json({ error: 'You cannot suspend your own account.' });
+  const status = req.body && req.body.status === 'active' ? 'active' : 'suspended';
+  try {
+    const r = await query('UPDATE admin_users SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING email', [status, req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Admin user not found.' });
+    await adminAudit('admin_user_' + status, { id: req.params.id, by: req.admin.email });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Could not update status.' }); }
+});
+
+// Issue a new temporary password (forces a password change at next login).
+router.post('/admin-users/:id/reset-password', requireOwner, async (req, res) => {
+  const tempPassword = genTempPassword();
+  const hash = await bcrypt.hash(tempPassword, 12);
+  try {
+    const r = await query('UPDATE admin_users SET password_hash=$1, must_change_password=TRUE, updated_at=NOW() WHERE id=$2 RETURNING email', [hash, req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Admin user not found.' });
+    await adminAudit('admin_user_password_reset', { id: req.params.id, by: req.admin.email });
+    res.json({ success: true, tempPassword });
+  } catch (e) { res.status(500).json({ error: 'Could not reset password.' }); }
+});
+
+// Clear 2FA (forces re-enrolment at next login).
+router.post('/admin-users/:id/reset-2fa', requireOwner, async (req, res) => {
+  try {
+    const r = await query('UPDATE admin_users SET totp_secret=NULL, must_setup_2fa=TRUE, updated_at=NOW() WHERE id=$1 RETURNING email', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Admin user not found.' });
+    await adminAudit('admin_user_2fa_reset', { id: req.params.id, by: req.admin.email });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Could not reset 2FA.' }); }
+});
+
+// Remove an admin user. Owners can't remove themselves.
+router.delete('/admin-users/:id', requireOwner, async (req, res) => {
+  if (req.admin.sub && req.admin.sub === req.params.id) return res.status(400).json({ error: 'You cannot remove your own account.' });
+  try {
+    const r = await query('DELETE FROM admin_users WHERE id=$1 RETURNING email', [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Admin user not found.' });
+    await adminAudit('admin_user_deleted', { id: req.params.id, email: r.rows[0].email, by: req.admin.email });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: 'Could not remove the admin user.' }); }
+});
+
 
 module.exports = router;
 
