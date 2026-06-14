@@ -273,6 +273,47 @@ router.post('/branding/logo', authenticateToken, async (req, res) => {
   }
 });
 
+// ── LISTINGS: connect status is read from the dashboard; these handle disconnect ──
+
+// POST /api/locations/:id/google/disconnect — clear the Google OAuth connection
+router.post('/locations/:id/google/disconnect', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const customerId = req.user.customerId || req.user.id;
+  try {
+    const own = await query('SELECT id, refresh_token FROM locations WHERE id=$1 AND customer_id=$2', [id, customerId]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
+
+    // Best-effort revoke with Google, then clear locally regardless
+    const token = own.rows[0].refresh_token;
+    if (token) {
+      try {
+        await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(token), { method: 'POST' });
+      } catch (e) { /* revoke is best-effort; we still clear locally */ }
+    }
+    await query('UPDATE locations SET refresh_token=NULL, updated_at=NOW() WHERE id=$1', [id]);
+    await query("UPDATE listing_platforms SET status='not_connected', updated_at=NOW() WHERE location_id=$1 AND platform='google'", [id]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Google disconnect error:', err.message);
+    res.status(500).json({ error: 'Could not disconnect Google' });
+  }
+});
+
+// POST /api/locations/:id/facebook/disconnect — stop monitoring the Facebook page
+router.post('/locations/:id/facebook/disconnect', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const customerId = req.user.customerId || req.user.id;
+  try {
+    const own = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [id, customerId]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
+    await query("UPDATE connected_platforms SET is_active=false, updated_at=NOW() WHERE location_id=$1 AND platform='facebook'", [id]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Facebook disconnect error:', err.message);
+    res.status(500).json({ error: 'Could not disconnect Facebook' });
+  }
+});
+
 // ============================================
 // REVIEW ROUTES
 // ============================================
@@ -800,6 +841,23 @@ const stripeWebhookHandler = async (req, res) => {
             );
 
             logger.info(`Welcome email sent to ${email}`);
+
+            // ── Provision the customer's first location from signup metadata ──
+            // billing_synced=true so the hourly resync won't reduce the
+            // quantity the customer already paid for at checkout.
+            const md = session.metadata || {};
+            if (md.business) {
+              const HEALTHCARE = ['Dental','Healthcare / Medical','Veterinary','Chiropractic','Mental Health / Therapy','Optometry'];
+              const isHealthcare = HEALTHCARE.includes(md.industry);
+              await query(
+                `INSERT INTO locations
+                  (customer_id, business_name, business_type, platform, platform_location_id,
+                   contact_email, tone, is_healthcare, is_active, billing_synced)
+                 VALUES ($1, $2, $3, 'manual', 'manual_' || gen_random_uuid()::text, $4, 'warm', $5, true, true)`,
+                [customerId, md.business, md.industry || null, email, isHealthcare]
+              ).catch(e => logger.error('first-location provision failed: ' + e.message));
+              logger.info(`First location provisioned for customer ${customerId}: ${md.business} (${md.industry || 'no industry'})`);
+            }
 
           } else {
             // Customer exists — update subscription
@@ -2396,6 +2454,56 @@ router.post('/campaigns', authenticateToken, async (req, res) => {
   } catch (err) {
     logger.error('POST /campaigns error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/checkout/session
+// Creates a Stripe Checkout Session for signup. Carries all signup fields as
+// metadata so the webhook (checkout.session.completed) can provision the full
+// account — customer + first location + correct graduated billing.
+router.post('/checkout/session', async (req, res) => {
+  try {
+    const { name, business, email, phone, industry, locations, billing } = req.body || {};
+    const n = parseInt(locations, 10) || 1;
+    if (!email || !business) return res.status(400).json({ error: 'Missing required fields' });
+    if (n > 99) return res.status(400).json({ error: 'Contact sales for 100+ locations' });
+
+    const annual = billing === 'annual';
+    const basePrice     = annual ? process.env.STRIPE_PRICE_BASE_ANNUAL     : process.env.STRIPE_PRICE_BASE_MONTHLY;
+    const locationPrice = annual ? process.env.STRIPE_PRICE_LOCATION_ANNUAL : process.env.STRIPE_PRICE_LOCATION_MONTHLY;
+    if (!basePrice) {
+      logger.error('checkout/session: base price env var not set');
+      return res.status(500).json({ error: 'Billing is not configured yet' });
+    }
+
+    // base (qty 1) + graduated location add-on (qty = locations - 1)
+    const line_items = [{ price: basePrice, quantity: 1 }];
+    if (n > 1 && locationPrice) line_items.push({ price: locationPrice, quantity: n - 1 });
+
+    const metadata = {
+      signup_name: name || '',
+      business:    business || '',
+      phone:       phone || '',
+      industry:    industry || '',
+      locations:   String(n),
+      billing:     annual ? 'annual' : 'monthly',
+    };
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer_email: email,
+      line_items,
+      allow_promotion_codes: true,
+      metadata,
+      subscription_data: { metadata },
+      success_url: 'https://swarmreply.com/signup.html?success=1',
+      cancel_url:  'https://swarmreply.com/signup.html?canceled=1',
+    });
+
+    return res.json({ url: session.url });
+  } catch (err) {
+    logger.error('checkout/session error: ' + err.message);
+    return res.status(500).json({ error: 'Could not start checkout' });
   }
 });
 
