@@ -120,7 +120,7 @@ app.use(hpp());
 
 // General API — 120 req / 15 min
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, max: 120,
+  windowMs: 15 * 60 * 1000, max: 1000,
   message:  { error: 'Too many requests. Please try again in 15 minutes.' },
   standardHeaders: true, legacyHeaders: false,
   skip: (req) => req.path === '/api/health',
