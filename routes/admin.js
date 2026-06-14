@@ -9,6 +9,8 @@ const router  = express.Router();
 const { query } = require('../database/db');
 const logger  = require('../utils/logger');
 const jwt     = require('jsonwebtoken');
+const { authenticator } = require('otplib');
+const QRCode  = require('qrcode');
 const { estimateMonthly, syncLocationBilling } = require('../services/locationBilling');
 
 // ── ADMIN AUTH MIDDLEWARE ─────────────────────
@@ -42,7 +44,7 @@ function safeEqual(a, b) {
 }
 
 router.post('/login', async (req, res) => {
-  const { email, password } = req.body || {};
+  const { email, password, code } = req.body || {};
   const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
   const ADMIN_PASS  = process.env.ADMIN_PASSWORD;
 
@@ -57,6 +59,21 @@ router.post('/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
+  // Second factor — enforced only once ADMIN_TOTP_SECRET is set in the environment.
+  // Before enrollment it's a no-op, so this can never lock the admin out.
+  const totpSecret = process.env.ADMIN_TOTP_SECRET;
+  if (totpSecret) {
+    const t = code != null ? String(code).trim() : '';
+    if (!/^\d{6}$/.test(t)) {
+      return res.status(401).json({ error: 'Authenticator code required', twofa: true });
+    }
+    let valid = false;
+    try { valid = authenticator.verify({ token: t, secret: totpSecret }); } catch (e) { valid = false; }
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid authenticator code', twofa: true });
+    }
+  }
+
   const token = jwt.sign(
     { email: ADMIN_EMAIL, role: 'superadmin' },
     process.env.JWT_SECRET,
@@ -65,6 +82,38 @@ router.post('/login', async (req, res) => {
 
   logger.info(`Admin login: ${ADMIN_EMAIL}`);
   res.json({ token });
+});
+
+// ── ADMIN 2FA (TOTP) ──────────────────────────
+// Whether a second factor is currently enforced.
+router.get('/2fa/status', requireAdmin, (req, res) => {
+  res.json({ enabled: !!process.env.ADMIN_TOTP_SECRET });
+});
+
+// Generate a fresh secret + QR for enrollment. The secret is NOT active until the
+// admin saves it as ADMIN_TOTP_SECRET in Railway, so this endpoint can't lock anyone
+// out. The secret is generated server-side and never sent to any third party.
+router.post('/2fa/setup', requireAdmin, async (req, res) => {
+  try {
+    const secret  = authenticator.generateSecret();
+    const label   = process.env.ADMIN_EMAIL || 'admin';
+    const otpauth = authenticator.keyuri(label, 'SwarmReply Admin', secret);
+    const qr      = await QRCode.toDataURL(otpauth, { margin: 1, width: 220 });
+    res.json({ secret, otpauth, qr });
+  } catch (err) {
+    logger.error('2fa setup error: ' + err.message);
+    res.status(500).json({ error: 'Could not generate a 2FA secret' });
+  }
+});
+
+// Confirm a code against a just-generated secret — lets the admin verify their
+// authenticator works BEFORE they rely on it (does not persist anything).
+router.post('/2fa/verify', requireAdmin, (req, res) => {
+  const { secret, code } = req.body || {};
+  if (!secret || !code) return res.status(400).json({ error: 'secret and code are required' });
+  let valid = false;
+  try { valid = authenticator.verify({ token: String(code).trim(), secret: String(secret).trim() }); } catch (e) { valid = false; }
+  res.json({ valid });
 });
 
 // ── GET ALL CUSTOMERS ─────────────────────────
