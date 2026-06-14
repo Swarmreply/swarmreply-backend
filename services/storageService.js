@@ -45,7 +45,7 @@ async function ensureBucket({ url, key }) {
 }
 
 // dataUri: "data:image/png;base64,...."  → { publicUrl }
-async function uploadLogo(locationId, dataUri) {
+async function uploadLogo(keyId, dataUri) {
   const { url, key } = cfg();
 
   const m = /^data:(image\/(png|jpeg|jpg|webp|svg\+xml));base64,(.+)$/i.exec(dataUri || '');
@@ -67,7 +67,7 @@ async function uploadLogo(locationId, dataUri) {
 
   // Stable path per location so re-uploads overwrite (no orphan files);
   // cache-bust with a version query param on read.
-  const path = `logos/${locationId}.${ext}`;
+  const path = `logos/${keyId}.${ext}`;
   await axios.post(
     `${url}/storage/v1/object/${BUCKET}/${path}`,
     bytes,
@@ -84,7 +84,7 @@ async function uploadLogo(locationId, dataUri) {
   );
 
   const publicUrl = `${url}/storage/v1/object/public/${BUCKET}/${path}?v=${Date.now()}`;
-  logger.info(`Storage: uploaded logo for location ${locationId} (${bytes.length} bytes)`);
+  logger.info(`Storage: uploaded logo for ${keyId} (${bytes.length} bytes)`);
   return { publicUrl };
 }
 
