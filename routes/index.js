@@ -91,6 +91,7 @@ router.get('/locations', authenticateToken, async (req, res) => {
       `SELECT id, business_name, business_type, platform, tone,
               always_include, never_include, contact_email, auto_reply,
               is_active, billing_synced, last_synced_at, created_at,
+              logo_url, logo_position,
               (refresh_token IS NOT NULL) AS google_connected
        FROM locations
        WHERE customer_id = $1
@@ -251,6 +252,50 @@ router.put('/locations/:id/settings', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/locations/:id/logo  { dataUri }  → uploads to storage, saves URL
+router.post('/locations/:id/logo', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { dataUri } = req.body || {};
+  const customerId = req.user.customerId || req.user.id;
+  try {
+    const own = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [id, customerId]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
+
+    const storageService = require('../services/storageService');
+    const { publicUrl } = await storageService.uploadLogo(id, dataUri);
+    await query('UPDATE locations SET logo_url=$1, updated_at=NOW() WHERE id=$2', [publicUrl, id]);
+    res.json({ success: true, logoUrl: publicUrl });
+  } catch (err) {
+    if (err.code === 'STORAGE_UNCONFIGURED') return res.status(503).json({ error: err.message });
+    if (err.code === 'BAD_IMAGE' || err.code === 'TOO_LARGE') return res.status(400).json({ error: err.message });
+    logger.error('Logo upload error:', err.message);
+    res.status(500).json({ error: 'Could not upload logo' });
+  }
+});
+
+// PUT /api/locations/:id/logo  { logoPosition?, remove? } → position / clear
+router.put('/locations/:id/logo', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { logoPosition, remove } = req.body || {};
+  const customerId = req.user.customerId || req.user.id;
+  try {
+    const own = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [id, customerId]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
+
+    if (remove) {
+      await query('UPDATE locations SET logo_url=NULL, updated_at=NOW() WHERE id=$1', [id]);
+    }
+    if (logoPosition && ['left', 'middle', 'right'].includes(logoPosition)) {
+      await query('UPDATE locations SET logo_position=$1, updated_at=NOW() WHERE id=$2', [logoPosition, id]);
+    }
+    const r = await query('SELECT logo_url, logo_position FROM locations WHERE id=$1', [id]);
+    res.json({ success: true, logoUrl: r.rows[0]?.logo_url || null, logoPosition: r.rows[0]?.logo_position || 'left' });
+  } catch (err) {
+    logger.error('Logo update error:', err.message);
+    res.status(500).json({ error: 'Could not update logo' });
+  }
+});
+
 // ============================================
 // REVIEW ROUTES
 // ============================================
@@ -391,7 +436,10 @@ router.get('/grow/stats', authenticateToken, async (req, res) => {
       query(`SELECT COUNT(*) sent
              FROM survey_sends ss JOIN locations l ON l.id = ss.location_id
              WHERE l.customer_id = $1 AND ss.created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
-      query(`SELECT COUNT(*) responses, ROUND(AVG(nps_score)::numeric, 1) avg_nps
+      query(`SELECT COUNT(*) responses, ROUND(AVG(nps_score)::numeric, 1) avg_nps,
+                    COUNT(*) FILTER (WHERE nps_score >= 9) promoters,
+                    COUNT(*) FILTER (WHERE nps_score BETWEEN 7 AND 8) passives,
+                    COUNT(*) FILTER (WHERE nps_score <= 6) detractors
              FROM survey_responses
              WHERE customer_id = $1 AND completed_at >= NOW() - INTERVAL '30 days'`, [customerId]),
       query(`SELECT ROUND(AVG(nps_score)::numeric, 1) avg_nps
@@ -430,6 +478,12 @@ router.get('/grow/stats', authenticateToken, async (req, res) => {
         avgNps,
         avgNpsDelta: (avgNps != null && avgNpsPrev != null) ? +(avgNps - avgNpsPrev).toFixed(1) : null,
         promotersRouted: i(routed.rows[0]?.routed),
+        breakdown: {
+          promoters: i(resp.rows[0]?.promoters),
+          passives: i(resp.rows[0]?.passives),
+          detractors: i(resp.rows[0]?.detractors),
+          total: responses,
+        },
       },
     });
   } catch (error) {
@@ -1637,7 +1691,7 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
 
     // Get location for review link + create the review request record
     const locResult = await query(
-      'SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]
+      'SELECT id, logo_url, logo_position FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]
     ).catch(() => ({ rows: [] }));
     const locationId = locResult.rows[0]?.id;
 
@@ -1657,7 +1711,9 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
 
     const reviewLink = 'https://app.swarmreply.com/review/' + token;
     const brandColor = tmpl.brandColor || '#f5c842';
-    const brandLogo  = tmpl.brandLogo  || 'https://swarmreply.com/bee-logo.png';
+    const locRow     = locResult.rows[0] || {};
+    const brandLogo  = locRow.logo_url || tmpl.brandLogo || 'https://swarmreply.com/bee-logo.png';
+    const logoAlign  = ({ left: 'left', middle: 'center', right: 'right' })[locRow.logo_position] || 'left';
     const buttonText = tmpl.buttonText || 'Share Your Feedback →';
     const firstName  = (name || '').trim().split(' ')[0] || 'there';
 
@@ -1668,7 +1724,7 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
       '<body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif">',
       '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px">',
       '<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">',
-      '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0">',
+      '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0;text-align:' + logoAlign + '">',
       '<img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain">',
       '</td></tr>',
       '<tr><td style="background:#ffffff;padding:36px 32px">',
@@ -1852,7 +1908,7 @@ router.get('/review/:token', async (req, res) => {
     const tmpl = { ...TEMPLATE_DEFAULTS, ...(tmplRes.rows[0]?.config || {}) };
 
     const locRes = await query(
-      'SELECT google_review_url, facebook_review_url, yelp_review_url FROM locations WHERE id=$1',
+      'SELECT google_review_url, facebook_review_url, yelp_review_url, logo_url, logo_position FROM locations WHERE id=$1',
       [row.location_id]
     ).catch(() => ({ rows: [] }));
     const loc = locRes.rows[0] || {};
@@ -1870,7 +1926,8 @@ router.get('/review/:token', async (req, res) => {
       businessName:    row.business_name,
       contactName:     row.contact_name,
       brandColor:      tmpl.brandColor,
-      brandLogo:       tmpl.brandLogo,
+      brandLogo:       loc.logo_url || tmpl.brandLogo,
+      logoPosition:    loc.logo_position || 'left',
       promoterMin:     tmpl.promoterMin,
       neutralMin:      tmpl.neutralMin,
       npsQuestion:     tmpl.npsQuestion,
