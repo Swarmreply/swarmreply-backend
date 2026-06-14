@@ -74,7 +74,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
 // ── POST /api/team/invite ─────────────────────────────────────────────────────
 // Invite a new team member — admin only
-router.post('/invite', authenticateToken, requireRole(['admin']), async (req, res) => {
+router.post('/invite', authenticateToken, requireRole(['admin', 'owner']), async (req, res) => {
   const { email, name, role } = req.body;
 
   if (!email || !name || !role) {
@@ -231,7 +231,7 @@ router.post('/accept', async (req, res) => {
 
 // ── PATCH /api/team/:id/role ──────────────────────────────────────────────────
 // Change a member's role — admin only
-router.patch('/:id/role', authenticateToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:id/role', authenticateToken, requireRole(['admin', 'owner']), async (req, res) => {
   const { role } = req.body;
   if (!['admin','manager','staff'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
@@ -263,7 +263,7 @@ router.patch('/:id/role', authenticateToken, requireRole(['admin']), async (req,
 
 // ── PATCH /api/team/:id/suspend ───────────────────────────────────────────────
 // Suspend / re-activate a member — admin only
-router.patch('/:id/suspend', authenticateToken, requireRole(['admin']), async (req, res) => {
+router.patch('/:id/suspend', authenticateToken, requireRole(['admin', 'owner']), async (req, res) => {
   const { suspend } = req.body; // true = suspend, false = re-activate
 
   try {
@@ -289,7 +289,7 @@ router.patch('/:id/suspend', authenticateToken, requireRole(['admin']), async (r
 
 // ── DELETE /api/team/:id ──────────────────────────────────────────────────────
 // Remove a member — admin only
-router.delete('/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
+router.delete('/:id', authenticateToken, requireRole(['admin', 'owner']), async (req, res) => {
   try {
     if (req.params.id === req.user.memberId) {
       return res.status(403).json({ error: 'You cannot remove yourself.' });
