@@ -44,7 +44,7 @@ const STEPS = [
     derive: (ctx) => ctx.locations > 0,
   },
   {
-    id: 'connect_google', title: 'Connect your Google Business Profile',
+    id: 'connect_google', title: 'Connect Google — where your reviews live and AI replies post',
     milestone: 'activate', required: false, points: 25, estMinutes: 2,
     dependsOn: ['business_details'], featureFlag: 'gbp',
     derive: (ctx) => ctx.connectedLocations > 0,
@@ -74,6 +74,13 @@ const STEPS = [
     milestone: 'optimize', required: false, points: 15, estMinutes: 2,
     dependsOn: ['business_details'], featureFlag: null,
     derive: (ctx) => ctx.aiQueries > 0,
+  },
+  {
+    id: 'listings_sync', title: 'Get your business info live on Google',
+    milestone: 'optimize', required: false, points: 20, estMinutes: 2,
+    dependsOn: ['connect_google'], featureFlag: null,
+    // Completes once Google is connected — the gate for pushing listings live.
+    derive: (ctx) => ctx.connectedLocations > 0,
   },
 
   // ── Pro ──
