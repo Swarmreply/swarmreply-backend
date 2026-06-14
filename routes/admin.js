@@ -9,6 +9,7 @@ const router  = express.Router();
 const { query } = require('../database/db');
 const logger  = require('../utils/logger');
 const jwt     = require('jsonwebtoken');
+const { estimateMonthly } = require('../services/locationBilling');
 
 // ── ADMIN AUTH MIDDLEWARE ─────────────────────
 function requireAdmin(req, res, next) {
@@ -84,6 +85,7 @@ router.get('/customers', requireAdmin, async (req, res) => {
         COALESCE(c.is_demo, false) as is_demo,
         COUNT(DISTINCT l.id) as location_count,
         MAX(l.last_synced_at) as last_synced,
+        ARRAY_AGG(DISTINCT l.business_name) FILTER (WHERE l.business_name IS NOT NULL) as business_names,
         ARRAY_AGG(DISTINCT l.platform) FILTER (WHERE l.platform IS NOT NULL) as platforms
       FROM customers c
       LEFT JOIN locations l ON l.customer_id = c.id AND l.is_active = true
@@ -134,12 +136,10 @@ router.get('/customers', requireAdmin, async (req, res) => {
 
     const enriched = customers.rows.map(c => {
       const locs = parseInt(c.location_count) || 0;
-      // Calculate MRR from location count
+      // MRR from the shared graduated pricing model (single source of truth).
       let mrr = 0;
-      if (c.status === 'active' && !c.is_demo) {
-        if (locs >= 1) mrr = 99;
-        if (locs > 1)  mrr += Math.min(locs - 1, 4) * 79;
-        if (locs > 5)  mrr += Math.min(locs - 5, 20) * 69;
+      if (c.status === 'active' && !c.is_demo && locs >= 1) {
+        mrr = estimateMonthly(locs);
       }
 
       return {
