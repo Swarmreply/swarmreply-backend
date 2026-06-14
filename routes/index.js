@@ -691,7 +691,7 @@ router.get('/pulse', authenticateToken, async (req, res) => {
         passives: num(npsRow.passives), detractors: num(npsRow.detractors), avg: num(npsRow.avg) },
       reply: { total, replied, replyRate: total ? Math.round((replied / total) * 100) : 0,
         avgHours: num(o.avg_hours) },
-      sms: { sent: num(smsRow.sms_sent), limit: num(smsRow.sms_limit) || 2000,
+      sms: { sent: num(smsRow.sms_sent), limit: num(smsRow.sms_limit) || 1000,
         campaigns: camps.rows.map(c => ({ name: c.name, status: c.status,
           recipients: num(c.recipient_count), sent: num(c.sent_count) })) },
       aivis: {
@@ -2305,49 +2305,61 @@ router.get('/campaigns', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/campaigns/usage — SMS quota for the current period
+// GET /api/campaigns/usage — real SMS usage this month (1,000 per location)
 router.get('/campaigns/usage', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
-    let result = await query(
-      'SELECT sms_sent, sms_limit FROM campaign_usage WHERE customer_id=$1', [customerId]
-    ).catch(() => ({ rows: [] }));
+    const now = new Date();
+    const year  = now.getFullYear();
+    const month = now.getMonth() + 1;
 
-    if (!result.rows.length) {
-      // Initialize a usage row on first read
-      await query(
-        'INSERT INTO campaign_usage (customer_id, sms_sent, sms_limit) VALUES ($1,0,2000) ON CONFLICT (customer_id) DO NOTHING',
-        [customerId]
-      ).catch(() => {});
-      result = { rows: [{ sms_sent: 0, sms_limit: 2000 }] };
-    }
+    // Limit is 1,000 SMS per active location, per month
+    const locRes = await query(
+      `SELECT COUNT(*)::int AS n FROM locations WHERE customer_id = $1 AND is_active = true`,
+      [customerId]
+    ).catch(() => ({ rows: [{ n: 0 }] }));
+    const locationCount = Math.max(1, locRes.rows[0]?.n || 1);
+    const limit = locationCount * 1000;
 
-    // Aggregate real campaign stats for the stat cards
+    // Real campaign SMS sent this month, summed across the customer's locations
+    const usedRes = await query(
+      `SELECT COALESCE(SUM(campaign_sms_sent), 0)::int AS used
+       FROM sms_monthly_usage
+       WHERE customer_id = $1 AND period_year = $2 AND period_month = $3`,
+      [customerId, year, month]
+    ).catch(() => ({ rows: [{ used: 0 }] }));
+    const used = usedRes.rows[0]?.used || 0;
+
+    // Real lifetime campaign stats for the stat cards
     const stats = await query(
       `SELECT
          COALESCE(SUM(sent_count),0)  AS total_sent,
          COALESCE(SUM(reply_count),0) AS total_replies,
          COUNT(*)                     AS total_campaigns
-       FROM campaigns WHERE customer_id=$1 AND status='sent'`,
+       FROM campaigns WHERE customer_id = $1 AND status = 'sent'`,
       [customerId]
     ).catch(() => ({ rows: [{ total_sent: 0, total_replies: 0, total_campaigns: 0 }] }));
-
-    const row = result.rows[0];
     const s = stats.rows[0];
+
+    // First of next month, for the reset label
+    const resetAt = new Date(Date.UTC(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1));
+
     res.json({
       usage: {
-        used:       parseInt(row.sms_sent) || 0,
-        limit:      parseInt(row.sms_limit) || 2000,
-        sms_sent:   parseInt(row.sms_sent) || 0,
-        sms_limit:  parseInt(row.sms_limit) || 2000,
-        total_sent:     parseInt(s.total_sent) || 0,
-        total_replies:  parseInt(s.total_replies) || 0,
-        total_campaigns:parseInt(s.total_campaigns) || 0,
+        used,
+        limit,
+        sms_sent:        used,
+        sms_limit:       limit,
+        locationCount,
+        resetAt:         resetAt.toISOString(),
+        total_sent:      parseInt(s.total_sent) || 0,
+        total_replies:   parseInt(s.total_replies) || 0,
+        total_campaigns: parseInt(s.total_campaigns) || 0,
       }
     });
   } catch (err) {
     logger.error('GET /campaigns/usage error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to load usage' });
   }
 });
 
