@@ -14,6 +14,7 @@ const { captureError, captureMessage } = require('../utils/sentry');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
+const { sendText, smsStatus } = require('../services/smsGate');
 
 // ============================================
 // HEALTH CHECK
@@ -1282,21 +1283,17 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
     }
 
     if (isPhone) {
-      // SMS via Twilio
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken  = process.env.TWILIO_AUTH_TOKEN;
-      const fromNumber = process.env.TWILIO_FROM_NUMBER;
-
-      if (!accountSid || !authToken || !fromNumber) {
-        return res.status(503).json({ error: 'SMS not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to Railway env vars.' });
+      // SMS via Twilio — routed through the central gate
+      const result = await sendText({ to: destination, body: fillVars(template.smsRequest), from: process.env.TWILIO_FROM_NUMBER });
+      if (!result.sent) {
+        if (result.reason === 'sms_gated') {
+          return res.status(503).json({ error: 'SMS sending is not enabled yet — texting goes live once A2P 10DLC registration is approved.' });
+        }
+        if (result.reason === 'twilio_not_configured') {
+          return res.status(503).json({ error: 'SMS not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to Railway env vars.' });
+        }
+        return res.status(502).json({ error: 'SMS send failed: ' + (result.reason || 'unknown') });
       }
-
-      const twilio = require('twilio')(accountSid, authToken);
-      await twilio.messages.create({
-        body: fillVars(template.smsRequest),
-        from: fromNumber,
-        to:   destination,
-      });
 
       logger.info('Test SMS sent to ' + destination);
       res.json({ success: true, channel: 'sms', destination });
@@ -2530,6 +2527,11 @@ router.post('/checkout/session', async (req, res) => {
     logger.error('checkout/session error: ' + err.message);
     return res.status(500).json({ error: 'Could not start checkout' });
   }
+});
+
+// SMS launch-gate status — drives "coming soon" banners + disabled send buttons in the app.
+router.get('/sms/status', (req, res) => {
+  res.json(smsStatus());
 });
 
 module.exports = router;
