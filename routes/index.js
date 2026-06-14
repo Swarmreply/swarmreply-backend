@@ -2299,7 +2299,17 @@ router.get('/contacts', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
     const result = await query(
-      "SELECT id, name, email, phone, segment, last_request_at AS last_request FROM contacts WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 1000",
+      `SELECT c.id, c.name, c.email, c.phone, c.segment, rr.last_request
+         FROM contacts c
+         LEFT JOIN (
+           SELECT lower(contact_email) AS email, MAX(created_at) AS last_request
+             FROM review_requests
+            WHERE customer_id = $1 AND contact_email IS NOT NULL
+            GROUP BY lower(contact_email)
+         ) rr ON lower(c.email) = rr.email
+        WHERE c.customer_id = $1
+        ORDER BY c.created_at DESC
+        LIMIT 1000`,
       [customerId]
     ).catch(() => ({ rows: [] }));
     const contacts = result.rows;
@@ -2312,6 +2322,31 @@ router.get('/contacts', authenticateToken, async (req, res) => {
     res.json({ contacts, segments });
   } catch (err) {
     logger.error('contacts GET error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/contacts/segment ────────────────────────────────────────────────
+// Assign a segment label to a set of contacts. Segments live on contacts.segment,
+// the same field SMS Campaigns target by — so a segment created here is shared.
+router.post('/contacts/segment', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { contactIds, segment } = req.body || {};
+    const seg = (segment || '').trim().toLowerCase();
+    if (!Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({ error: 'contactIds is required' });
+    }
+    if (!seg) return res.status(400).json({ error: 'segment name is required' });
+    // Parameterized id list — works whether contact ids are int or uuid.
+    const ph = contactIds.map((_, i) => `$${i + 3}`).join(',');
+    const r = await query(
+      `UPDATE contacts SET segment=$1 WHERE customer_id=$2 AND id IN (${ph})`,
+      [seg, customerId, ...contactIds]
+    );
+    res.json({ success: true, updated: r.rowCount || 0, segment: seg });
+  } catch (err) {
+    logger.error('contacts segment error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
