@@ -252,47 +252,24 @@ router.put('/locations/:id/settings', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/locations/:id/logo  { dataUri }  → uploads to storage, saves URL
-router.post('/locations/:id/logo', authenticateToken, async (req, res) => {
-  const { id } = req.params;
+// POST /api/branding/logo  { dataUri }  → upload to storage, return public URL
+// Customer-scoped: the logo belongs to the review template (set in Grow > Branding
+// and the setup wizard). Also mirrors onto the customer's locations so surveys
+// and NPS pages stay branded from the same upload.
+router.post('/branding/logo', authenticateToken, async (req, res) => {
   const { dataUri } = req.body || {};
   const customerId = req.user.customerId || req.user.id;
   try {
-    const own = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [id, customerId]);
-    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
-
     const storageService = require('../services/storageService');
-    const { publicUrl } = await storageService.uploadLogo(id, dataUri);
-    await query('UPDATE locations SET logo_url=$1, updated_at=NOW() WHERE id=$2', [publicUrl, id]);
+    const { publicUrl } = await storageService.uploadLogo(customerId, dataUri);
+    await query('UPDATE locations SET logo_url=$1, updated_at=NOW() WHERE customer_id=$2', [publicUrl, customerId])
+      .catch(() => {});
     res.json({ success: true, logoUrl: publicUrl });
   } catch (err) {
     if (err.code === 'STORAGE_UNCONFIGURED') return res.status(503).json({ error: err.message });
     if (err.code === 'BAD_IMAGE' || err.code === 'TOO_LARGE') return res.status(400).json({ error: err.message });
-    logger.error('Logo upload error:', err.message);
+    logger.error('Branding logo upload error:', err.message);
     res.status(500).json({ error: 'Could not upload logo' });
-  }
-});
-
-// PUT /api/locations/:id/logo  { logoPosition?, remove? } → position / clear
-router.put('/locations/:id/logo', authenticateToken, async (req, res) => {
-  const { id } = req.params;
-  const { logoPosition, remove } = req.body || {};
-  const customerId = req.user.customerId || req.user.id;
-  try {
-    const own = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [id, customerId]);
-    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
-
-    if (remove) {
-      await query('UPDATE locations SET logo_url=NULL, updated_at=NOW() WHERE id=$1', [id]);
-    }
-    if (logoPosition && ['left', 'middle', 'right'].includes(logoPosition)) {
-      await query('UPDATE locations SET logo_position=$1, updated_at=NOW() WHERE id=$2', [logoPosition, id]);
-    }
-    const r = await query('SELECT logo_url, logo_position FROM locations WHERE id=$1', [id]);
-    res.json({ success: true, logoUrl: r.rows[0]?.logo_url || null, logoPosition: r.rows[0]?.logo_position || 'left' });
-  } catch (err) {
-    logger.error('Logo update error:', err.message);
-    res.status(500).json({ error: 'Could not update logo' });
   }
 });
 
@@ -1691,7 +1668,7 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
 
     // Get location for review link + create the review request record
     const locResult = await query(
-      'SELECT id, logo_url, logo_position FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]
+      'SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]
     ).catch(() => ({ rows: [] }));
     const locationId = locResult.rows[0]?.id;
 
@@ -1711,9 +1688,8 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
 
     const reviewLink = 'https://app.swarmreply.com/review/' + token;
     const brandColor = tmpl.brandColor || '#f5c842';
-    const locRow     = locResult.rows[0] || {};
-    const brandLogo  = locRow.logo_url || tmpl.brandLogo || 'https://swarmreply.com/bee-logo.png';
-    const logoAlign  = ({ left: 'left', middle: 'center', right: 'right' })[locRow.logo_position] || 'left';
+    const brandLogo  = tmpl.brandLogo  || 'https://swarmreply.com/bee-logo.png';
+    const logoAlign  = ({ left: 'left', middle: 'center', right: 'right' })[tmpl.brandLogoPosition] || 'left';
     const buttonText = tmpl.buttonText || 'Share Your Feedback →';
     const firstName  = (name || '').trim().split(' ')[0] || 'there';
 
@@ -1835,6 +1811,7 @@ router.put('/locations/:id/review-urls', authenticateToken, async (req, res) => 
 const TEMPLATE_DEFAULTS = {
   brandColor: '#f5c842',
   brandLogo: 'https://swarmreply.com/bee-logo.png',
+  brandLogoPosition: 'left',
   buttonText: 'Share Your Feedback \u2192',
   promoterMin: 9,
   neutralMin: 7,
@@ -1908,7 +1885,7 @@ router.get('/review/:token', async (req, res) => {
     const tmpl = { ...TEMPLATE_DEFAULTS, ...(tmplRes.rows[0]?.config || {}) };
 
     const locRes = await query(
-      'SELECT google_review_url, facebook_review_url, yelp_review_url, logo_url, logo_position FROM locations WHERE id=$1',
+      'SELECT google_review_url, facebook_review_url, yelp_review_url FROM locations WHERE id=$1',
       [row.location_id]
     ).catch(() => ({ rows: [] }));
     const loc = locRes.rows[0] || {};
@@ -1926,8 +1903,8 @@ router.get('/review/:token', async (req, res) => {
       businessName:    row.business_name,
       contactName:     row.contact_name,
       brandColor:      tmpl.brandColor,
-      brandLogo:       loc.logo_url || tmpl.brandLogo,
-      logoPosition:    loc.logo_position || 'left',
+      brandLogo:       tmpl.brandLogo,
+      logoPosition:    tmpl.brandLogoPosition || 'left',
       promoterMin:     tmpl.promoterMin,
       neutralMin:      tmpl.neutralMin,
       npsQuestion:     tmpl.npsQuestion,
