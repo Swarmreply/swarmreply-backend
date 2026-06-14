@@ -3,17 +3,17 @@
 // DB-driven per-location billing.
 //
 // Pricing model (matches the marketing site):
-//   • Base plan ........ $99/mo  (covers location #1)
-//   • Locations 2–5 .... $79/mo each
-//   • Locations 6–25 ... $69/mo each
-//   • 26+ .............. Agency (contact sales, handled off-platform)
+//   • Locations 1–2 .... $99/mo each
+//   • Locations 3–25 ... $89/mo each
+//   • Locations 26–99 .. $79/mo each
+//   • 100+ ............. Agency (contact sales, handled off-platform)
 //
 // Stripe shape: ONE subscription with two recurring items —
 //   1. Base price            (qty 1)
 //   2. Location add-on price (qty = activeLocations - 1)
 // The add-on price is configured in Stripe as GRADUATED tiers
-// (units 1–4 = $79, units 5–24 = $69), so we only ever set the quantity
-// here — Stripe applies the per-unit math. We never compute charges ourselves.
+// (unit 1 = $99, units 2–24 = $89, units 25–98 = $79), so we only ever set the
+// quantity here — Stripe applies the per-unit math. We never compute charges ourselves.
 // ============================================
 
 const Stripe = require('stripe');
@@ -29,29 +29,29 @@ const LOCATION_ANNUAL  = process.env.STRIPE_PRICE_LOCATION_ANNUAL;
 // Display-only rates (for estimates/breakdowns shown in the dashboard).
 // Stripe remains the source of truth for what is actually charged.
 const PRICING = {
-  base:           99,
-  tier1:          79,   // locations 2–5
-  tier2:          69,   // locations 6–25
+  base:           99,   // locations 1–2 (each)
+  tier2:          89,   // locations 3–25 (each)
+  tier3:          79,   // locations 26–99 (each)
   annualDiscount: 0.90, // 10% off
-  maxSelfServe:   25,   // 26+ → agency
+  maxSelfServe:   99,   // 100+ → agency
 };
 
 // Mirror of the website's calculator — for display/estimates only.
 function estimateMonthly(locationCount) {
   const n = parseInt(locationCount, 10) || 0;
   if (n < 1) return PRICING.base;
-  let total = PRICING.base;                       // location #1
-  if (n > 1) total += Math.min(n - 1, 4) * PRICING.tier1;  // 2–5
-  if (n > 5) total += Math.min(n - 5, 20) * PRICING.tier2; // 6–25
+  let total = Math.min(n, 2) * PRICING.base;                  // locations 1–2 @ $99
+  if (n > 2)  total += Math.min(n - 2, 23) * PRICING.tier2;   // locations 3–25 @ $89
+  if (n > 25) total += Math.min(n - 25, 74) * PRICING.tier3;  // locations 26–99 @ $79
   return total;
 }
 
 function priceBreakdown(locationCount, annual = false) {
   const n = parseInt(locationCount, 10) || 1;
   const f = annual ? PRICING.annualDiscount : 1;
-  const rows = [{ label: 'First location', qty: 1, rate: Math.round(PRICING.base * f) }];
-  if (n > 1) rows.push({ label: 'Locations 2–5', qty: Math.min(n - 1, 4), rate: Math.round(PRICING.tier1 * f) });
-  if (n > 5) rows.push({ label: 'Locations 6–25', qty: Math.min(n - 5, 20), rate: Math.round(PRICING.tier2 * f) });
+  const rows = [{ label: 'Locations 1–2', qty: Math.min(n, 2), rate: Math.round(PRICING.base * f) }];
+  if (n > 2)  rows.push({ label: 'Locations 3–25', qty: Math.min(n - 2, 23), rate: Math.round(PRICING.tier2 * f) });
+  if (n > 25) rows.push({ label: 'Locations 26–99', qty: Math.min(n - 25, 74), rate: Math.round(PRICING.tier3 * f) });
   const monthly = Math.round(estimateMonthly(n) * f);
   return { rows, monthly, annual: annual ? monthly * 12 : null };
 }
