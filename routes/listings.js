@@ -13,10 +13,7 @@ const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
 const listingsService = require('../services/listingsService');
 
-const GUIDED_DIRECTORIES = [
-  'yelp', 'facebook', 'nextdoor', 'bbb',
-  'yellowpages', 'tripadvisor', 'foursquare', 'angi',
-];
+const MONITORED_DIRECTORIES = ['facebook', 'foursquare'];
 
 // Every route: the location must belong to the caller's customer
 async function ownLocation(req, res) {
@@ -39,7 +36,19 @@ async function getDirectories(locationId) {
     [locationId]
   );
   const byKey = Object.fromEntries(res.rows.map(r => [r.directory, r]));
-  return GUIDED_DIRECTORIES.map(d => ({
+
+  // Is Facebook actively connected for this location?
+  const fb = await query(
+    `SELECT is_active FROM connected_platforms
+     WHERE location_id = $1 AND platform = 'facebook' AND is_active = true`,
+    [locationId]
+  ).catch(() => ({ rows: [] }));
+  const facebookConnected = fb.rows.length > 0;
+
+  // Foursquare monitoring is on once the server-side key exists (it's our key, not the customer's)
+  const foursquareEnabled = !!process.env.FOURSQUARE_API_KEY;
+
+  return MONITORED_DIRECTORIES.map(d => ({
     directory: d,
     status: byKey[d]?.status || 'not_setup',
     note: byKey[d]?.note || null,
@@ -47,7 +56,10 @@ async function getDirectories(locationId) {
     last_checked_at: byKey[d]?.last_checked_at || null,
     found_name: byKey[d]?.found_name || null,
     found_phone: byKey[d]?.found_phone || null,
+    found_address: byKey[d]?.found_address || null,
     diverged_fields: byKey[d]?.diverged_fields || null,
+    connected: d === 'facebook' ? facebookConnected : foursquareEnabled,
+    keyGated: d === 'foursquare',
   }));
 }
 
@@ -55,11 +67,13 @@ async function getDirectories(locationId) {
 router.get('/:locationId', authenticateToken, async (req, res) => {
   try {
     if (!(await ownLocation(req, res))) return;
-    const [dashboard, directories] = await Promise.all([
+    const [dashboard, directories, gc] = await Promise.all([
       listingsService.getListingsDashboard(req.params.locationId),
       getDirectories(req.params.locationId),
+      query('SELECT (refresh_token IS NOT NULL) AS connected FROM locations WHERE id = $1', [req.params.locationId]).catch(() => ({ rows: [] })),
     ]);
-    res.json({ ...dashboard, directories });
+    const googleConnected = !!gc.rows[0]?.connected;
+    res.json({ ...dashboard, directories, googleConnected });
   } catch (err) {
     logger.error('Listings dashboard error:', err.message);
     res.status(500).json({ error: 'Could not load listings' });
@@ -109,7 +123,7 @@ router.put('/:locationId/directories/:directory', authenticateToken, async (req,
     if (!(await ownLocation(req, res))) return;
     const { directory } = req.params;
     const { status, note } = req.body || {};
-    if (!GUIDED_DIRECTORIES.includes(directory)) return res.status(400).json({ error: 'Unknown directory' });
+    if (!MONITORED_DIRECTORIES.includes(directory)) return res.status(400).json({ error: 'Unknown directory' });
     if (!['not_setup', 'verified', 'attention'].includes(status)) return res.status(400).json({ error: 'Unknown status' });
     await query(
       `INSERT INTO listing_directories (location_id, directory, status, note, verified_at, updated_at)
