@@ -5,8 +5,9 @@
 // but we can READ several of them and flag drift:
 //
 //   facebook    — page token already stored (no config)
-//   yelp        — Yelp Fusion business-match (YELP_API_KEY, free)
-//   foursquare  — Places match (FOURSQUARE_API_KEY, free)
+//   foursquare  — FSQ Places "match" endpoint (FOURSQUARE_API_KEY).
+//                 Foursquare data feeds Apple Maps, Uber, Nextdoor and
+//                 others, so one consistent listing propagates widely.
 //
 // BBB / Yellow Pages / Nextdoor / Angi have no public
 // read APIs — those stay manual, with staleness hints
@@ -20,7 +21,7 @@ const {
   normalizeString, normalizePhone, normalizeUrl, buildFullAddress,
 } = require('./listingsService');
 
-const CHECKABLE = ['facebook', 'yelp', 'foursquare'];
+const CHECKABLE = ['facebook', 'foursquare'];
 
 // ── Per-directory fetchers ─────────────────────
 // Each returns { name, phone, address, website } or null
@@ -51,57 +52,54 @@ async function fetchFacebookPage(location) {
   };
 }
 
-async function fetchYelp(location) {
-  const key = process.env.YELP_API_KEY;
-  if (!key) return null;
-  if (!location.address_line1 || !location.city || !location.state) return null;
-  const { data } = await axios.get('https://api.yelp.com/v3/businesses/matches', {
-    headers: { Authorization: `Bearer ${key}` },
-    params: {
-      name: location.business_name,
-      address1: location.address_line1,
-      city: location.city,
-      state: location.state,
-      country: location.country || 'US',
-    },
-    timeout: 10000,
-  });
-  const b = data.businesses && data.businesses[0];
-  if (!b) return null;
-  return {
-    name: b.name || null,
-    phone: b.phone || null,
-    address: (b.location?.display_address || []).join(', ') || null,
-    website: null, // Yelp match doesn't return the business website
-  };
-}
-
 async function fetchFoursquare(location) {
   const key = process.env.FOURSQUARE_API_KEY;
   if (!key) return null;
   if (!location.address_line1 || !location.city || !location.state) return null;
-  const { data } = await axios.get('https://api.foursquare.com/v3/places/match', {
-    headers: { Authorization: key },
-    params: {
-      name: location.business_name,
-      address: location.address_line1,
-      city: location.city,
-      state: location.state,
-      cc: (location.country || 'US').toLowerCase(),
-    },
-    timeout: 10000,
-  });
-  const p = data.place;
+
+  // New FSQ Places API (legacy v3 host retires May 15 2026). The "match"
+  // endpoint only 200s on a strong match; a 404 (no confident match) just
+  // means "nothing to compare" — we return null and never flag a divergence.
+  const version = process.env.FOURSQUARE_API_VERSION || '2025-06-17';
+  let data;
+  try {
+    const res = await axios.get('https://places-api.foursquare.com/places/match', {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'X-Places-Api-Version': version,
+        Accept: 'application/json',
+      },
+      params: {
+        name:    location.business_name,
+        address: location.address_line1,
+        city:    location.city,
+        state:   location.state,
+        postcode: location.zip || undefined,
+        cc:      (location.country || 'US').toUpperCase(),
+        fields:  'name,tel,website,location',
+      },
+      timeout: 10000,
+    });
+    data = res.data;
+  } catch (err) {
+    if (err.response?.status === 404) return null; // no confident match
+    throw err;
+  }
+
+  // Response shape tolerance: new API may return { place }, { result }, or the place directly
+  const p = data?.place || data?.result || (data?.name ? data : null);
   if (!p) return null;
   return {
-    name: p.name || null,
-    phone: p.tel || null,
-    address: p.location?.formatted_address || null,
+    name:    p.name || null,
+    phone:   p.tel || null,
+    address: p.location?.formatted_address
+             || [p.location?.address, p.location?.locality, p.location?.region, p.location?.postcode].filter(Boolean).join(', ')
+             || null,
     website: p.website || null,
   };
 }
 
-const FETCHERS = { facebook: fetchFacebookPage, yelp: fetchYelp, foursquare: fetchFoursquare };
+const FETCHERS = { facebook: fetchFacebookPage, foursquare: fetchFoursquare };
 
 // ── Divergence (reuses the engine's normalizers) ──
 
@@ -116,7 +114,7 @@ function diff(location, found) {
 }
 
 function noteFor(directory, fields, found) {
-  const pretty = { facebook: 'Facebook', yelp: 'Yelp', foursquare: 'Foursquare' }[directory] || directory;
+  const pretty = { facebook: 'Facebook', foursquare: 'Foursquare' }[directory] || directory;
   const detail = fields.includes('phone') && found.phone ? ` (shows ${found.phone})` : '';
   return `${pretty} lists a different ${fields.join(', ')}${detail}`;
 }
