@@ -12,7 +12,7 @@ const googleService = require('../services/googleService');
 const logger = require('../utils/logger');
 const { captureError, captureMessage } = require('../utils/sentry');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
 
 // ============================================
@@ -249,6 +249,31 @@ router.put('/locations/:id/settings', authenticateToken, async (req, res) => {
   } catch (error) {
     logger.error('Update location settings error:', error.message);
     res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// PUT /api/locations/:id/profile — update business name and/or type.
+// Business TYPE changes are admin/owner only (per product rule); the onboarding
+// wizard uses this to confirm the business NAME on the location created at signup.
+router.put('/locations/:id/profile', authenticateToken, requireRole(['admin', 'owner']), async (req, res) => {
+  const { id } = req.params;
+  const customerId = req.user.customerId || req.user.id;
+  const { businessName, businessType } = req.body || {};
+  try {
+    const own = await query('SELECT id FROM locations WHERE id = $1 AND customer_id = $2', [id, customerId]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Location not found' });
+    await query(
+      `UPDATE locations
+         SET business_name = COALESCE($1, business_name),
+             business_type = COALESCE($2, business_type),
+             updated_at = NOW()
+       WHERE id = $3 AND customer_id = $4`,
+      [businessName ?? null, businessType ?? null, id, customerId]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Update location profile error: ' + error.message);
+    res.status(500).json({ error: 'Could not update business profile' });
   }
 });
 
