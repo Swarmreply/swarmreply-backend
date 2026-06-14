@@ -76,7 +76,7 @@ const STEPS = [
     derive: (ctx) => ctx.aiQueries > 0,
   },
   {
-    id: 'listings_sync', title: 'Get your business info live on Google',
+    id: 'listings_sync', title: 'Make your business info consistent everywhere',
     milestone: 'optimize', required: false, points: 20, estMinutes: 2,
     dependsOn: ['connect_google'], featureFlag: null,
     // Completes once Google is connected — the gate for pushing listings live.
