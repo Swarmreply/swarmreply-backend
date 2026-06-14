@@ -9,7 +9,7 @@ const router  = express.Router();
 const { query } = require('../database/db');
 const logger  = require('../utils/logger');
 const jwt     = require('jsonwebtoken');
-const { estimateMonthly } = require('../services/locationBilling');
+const { estimateMonthly, syncLocationBilling } = require('../services/locationBilling');
 
 // ── ADMIN AUTH MIDDLEWARE ─────────────────────
 function requireAdmin(req, res, next) {
@@ -205,7 +205,7 @@ router.get('/customers/:id', requireAdmin, async (req, res) => {
     ).catch(() => ({ rows: [] }));
 
     const team = await query(
-      'SELECT id, name, email, role, last_login_at FROM team_members WHERE customer_id = $1',
+      'SELECT id, name, email, role, status, last_login_at FROM team_members WHERE customer_id = $1',
       [id]
     ).catch(() => ({ rows: [] }));
 
@@ -412,6 +412,155 @@ router.post('/customers/:id/users', requireAdmin, async (req, res) => {
     if (err.code === '23505') return res.status(409).json({ error: 'A user with that email already exists for this customer.' });
     logger.error('admin add-user failed: ' + err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// ADMIN EDITS — Tier 1 & 2 (support / account management)
+// All gated by requireAdmin. These mirror the customer-facing endpoints but
+// are NOT scoped to a token's own customer, so an admin can edit any account.
+// ─────────────────────────────────────────────────────────────────────────
+
+const EMAIL_RE = /^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/;
+
+// PATCH /api/admin/customers/:id/account — name / email / alert preferences
+router.patch('/customers/:id/account', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { name, email, notificationPrefs } = req.body || {};
+  if (email !== undefined && !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'Please enter a valid email address.' });
+  }
+  try {
+    const sets = [], params = [];
+    let i = 1;
+    if (name !== undefined)              { sets.push(`name=$${i++}`);               params.push(name); }
+    if (email !== undefined)             { sets.push(`email=$${i++}`);              params.push(email.toLowerCase().trim()); }
+    if (notificationPrefs !== undefined) { sets.push(`notification_prefs=$${i++}`); params.push(JSON.stringify(notificationPrefs)); }
+    if (!sets.length) return res.json({ success: true });
+    params.push(id);
+    await query(`UPDATE customers SET ${sets.join(', ')}, updated_at=NOW() WHERE id=$${i}`, params);
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [id, 'admin_edit_account', JSON.stringify({ admin: req.admin.email, fields: Object.keys(req.body || {}) })]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'That email is already in use.' });
+    logger.error('admin edit account error: ' + err.message);
+    res.status(500).json({ error: 'Could not update account' });
+  }
+});
+
+// PUT /api/admin/locations/:locId — edit a single location's fields
+// (business name/type, contact email, tone, custom instructions, auto-reply, active)
+router.put('/locations/:locId', requireAdmin, async (req, res) => {
+  const { locId } = req.params;
+  const { businessName, businessType, contactEmail, tone, customInstructions, autoReply, isActive } = req.body || {};
+  if (contactEmail !== undefined && contactEmail && !EMAIL_RE.test(contactEmail)) {
+    return res.status(400).json({ error: 'Please enter a valid contact email.' });
+  }
+  try {
+    const owner = await query('SELECT customer_id FROM locations WHERE id=$1', [locId]);
+    if (!owner.rows.length) return res.status(404).json({ error: 'Location not found' });
+    const customerId = owner.rows[0].customer_id;
+
+    const sets = [], params = [];
+    let i = 1;
+    if (businessName       !== undefined) { sets.push(`business_name=$${i++}`);       params.push(businessName); }
+    if (businessType       !== undefined) { sets.push(`business_type=$${i++}`);       params.push(businessType); }
+    if (contactEmail       !== undefined) { sets.push(`contact_email=$${i++}`);       params.push(contactEmail || null); }
+    if (tone               !== undefined) { sets.push(`tone=$${i++}`);                params.push(tone); }
+    if (customInstructions !== undefined) { sets.push(`custom_instructions=$${i++}`); params.push(customInstructions || null); }
+    if (autoReply          !== undefined) { sets.push(`auto_reply=$${i++}`);          params.push(!!autoReply); }
+    if (isActive           !== undefined) { sets.push(`is_active=$${i++}`);           params.push(!!isActive); }
+    if (!sets.length) return res.json({ success: true });
+
+    params.push(locId);
+    await query(`UPDATE locations SET ${sets.join(', ')}, updated_at=NOW() WHERE id=$${i}`, params);
+
+    // Toggling a location active/inactive changes what the customer is billed for.
+    if (isActive !== undefined) {
+      try { await syncLocationBilling(customerId); } catch (e) { logger.error('billing resync after admin toggle: ' + e.message); }
+    }
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [customerId, 'admin_edit_location', JSON.stringify({ admin: req.admin.email, locId, fields: Object.keys(req.body || {}) })]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('admin edit location error: ' + err.message);
+    res.status(500).json({ error: 'Could not update location' });
+  }
+});
+
+// PUT /api/admin/locations/:locId/review-urls — edit a location's review links
+router.put('/locations/:locId/review-urls', requireAdmin, async (req, res) => {
+  const { locId } = req.params;
+  const { googleReviewUrl, facebookReviewUrl, yelpReviewUrl } = req.body || {};
+  try {
+    const result = await query(
+      `UPDATE locations
+         SET google_review_url=$1, facebook_review_url=$2, yelp_review_url=$3, updated_at=NOW()
+       WHERE id=$4 RETURNING customer_id`,
+      [googleReviewUrl || null, facebookReviewUrl || null, yelpReviewUrl || null, locId]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Location not found' });
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [result.rows[0].customer_id, 'admin_edit_review_urls', JSON.stringify({ admin: req.admin.email, locId })]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('admin review-urls error: ' + err.message);
+    res.status(500).json({ error: 'Could not update review links' });
+  }
+});
+
+// PATCH /api/admin/team/:memberId/role — change a team member's role
+router.patch('/team/:memberId/role', requireAdmin, async (req, res) => {
+  const { memberId } = req.params;
+  const { role } = req.body || {};
+  if (!['admin', 'manager', 'staff'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
+  try {
+    const result = await query(
+      `UPDATE team_members SET role=$2, updated_at=NOW() WHERE id=$1 RETURNING customer_id, name, role`,
+      [memberId, role]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Team member not found' });
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [result.rows[0].customer_id, 'admin_team_role', JSON.stringify({ admin: req.admin.email, memberId, role })]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('admin team role error: ' + err.message);
+    res.status(500).json({ error: 'Could not change role' });
+  }
+});
+
+// PATCH /api/admin/team/:memberId/suspend — suspend / reactivate a team member
+router.patch('/team/:memberId/suspend', requireAdmin, async (req, res) => {
+  const { memberId } = req.params;
+  const { suspend } = req.body || {};
+  try {
+    const result = await query(
+      `UPDATE team_members SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING customer_id, name`,
+      [memberId, suspend ? 'suspended' : 'active']
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Team member not found' });
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [result.rows[0].customer_id, 'admin_team_suspend', JSON.stringify({ admin: req.admin.email, memberId, suspend: !!suspend })]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('admin team suspend error: ' + err.message);
+    res.status(500).json({ error: 'Could not update member' });
+  }
+});
+
+// DELETE /api/admin/team/:memberId — remove a team member
+router.delete('/team/:memberId', requireAdmin, async (req, res) => {
+  const { memberId } = req.params;
+  try {
+    const result = await query('DELETE FROM team_members WHERE id=$1 RETURNING customer_id, name', [memberId]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Team member not found' });
+    await query('INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
+      [result.rows[0].customer_id, 'admin_team_remove', JSON.stringify({ admin: req.admin.email, memberId })]).catch(() => {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('admin team remove error: ' + err.message);
+    res.status(500).json({ error: 'Could not remove member' });
   }
 });
 
