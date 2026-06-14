@@ -13,6 +13,7 @@ const logger = require('../utils/logger');
 let _resend = null; function getResend() { if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder'); return _resend; }
 
 // Twilio client — lazy init so app starts without Twilio if not configured
+const { sendText } = require('./smsGate');
 let twilioClient = null;
 function getTwilio() {
   if (!twilioClient && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
@@ -222,22 +223,22 @@ function buildEmailHTML(body, location) {
 // ============================================
 
 async function sendSMS(body, contact, location) {
-  const twilio = getTwilio();
-  if (!twilio) {
-    throw new Error('SMS not configured — add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to env');
-  }
-
   // Format phone number
   const phone = formatPhone(contact.phone);
   if (!phone) throw new Error(`Invalid phone number: ${contact.phone}`);
 
-  const message = await twilio.messages.create({
-    body: body,
-    from: process.env.TWILIO_FROM_NUMBER,
-    to: phone
-  });
+  const result = await sendText({ to: phone, body, from: process.env.TWILIO_FROM_NUMBER });
+  if (!result.sent) {
+    if (result.reason === 'sms_gated') {
+      throw new Error('SMS sending is not enabled yet — texting goes live once A2P 10DLC registration is approved.');
+    }
+    if (result.reason === 'twilio_not_configured') {
+      throw new Error('SMS not configured — add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to env');
+    }
+    throw new Error('SMS send failed: ' + (result.reason || 'unknown'));
+  }
 
-  return { messageId: message.sid };
+  return { messageId: result.sid };
 }
 
 /**

@@ -16,6 +16,7 @@ const { Resend } = require('resend');
 const logger = require('../utils/logger');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+const { sendText } = require('./smsGate');
 
 // Lazy Twilio init
 let twilioClient = null;
@@ -216,25 +217,25 @@ async function notifyBusiness(cfg, session, visitorName, visitorPhone, firstMess
   }
 
   // SMS notification to business owner
-  if (cfg.notify_sms && getTwilio()) {
-    await getTwilio().messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
+  if (cfg.notify_sms) {
+    await sendText({
       to: cfg.notify_sms,
       body: `💬 New webchat from ${name}${visitorPhone ? ` (${visitorPhone})` : ''}: "${firstMessage.substring(0, 120)}"\n\nReply: ${dashUrl}`
     });
   }
 
   // SMS to visitor if phone provided — bridges conversation to text
-  if (visitorPhone && cfg.sms_reply_enabled && getTwilio()) {
-    await getTwilio().messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
+  if (visitorPhone && cfg.sms_reply_enabled) {
+    const optIn = await sendText({
       to: visitorPhone,
       body: `Hi ${name || 'there'}! 👋 Thanks for reaching out to ${businessName}. We'll text you right back at this number. — Powered by SwarmReply`
     });
-    await query(
-      `UPDATE webchat_sessions SET sms_opted_in = true WHERE id = $1`,
-      [session.id]
-    );
+    if (optIn.sent) {
+      await query(
+        `UPDATE webchat_sessions SET sms_opted_in = true WHERE id = $1`,
+        [session.id]
+      );
+    }
   }
 }
 
@@ -327,9 +328,8 @@ async function sendMessage(sessionId, locationId, { body, agentId, agentName, se
 
   // SMS bridge — text the visitor if they opted in
   if (sendSms && session.sms_opted_in && session.visitor_phone &&
-      session.sms_reply_enabled && getTwilio()) {
-    await getTwilio().messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
+      session.sms_reply_enabled) {
+    await sendText({
       to: session.visitor_phone,
       body
     });
@@ -376,9 +376,8 @@ async function receiveVisitorMessage(sessionId, token, body) {
   broadcastToSession(sessionId, { type: 'message', message: msg.rows[0] });
 
   // Ping business owner via SMS for subsequent messages
-  if (sess.notify_sms && getTwilio()) {
-    await getTwilio().messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
+  if (sess.notify_sms) {
+    await sendText({
       to: sess.notify_sms,
       body: `💬 ${sess.visitor_name || 'Visitor'}: "${body.substring(0, 140)}"`
     }).catch(() => {});
@@ -481,9 +480,8 @@ async function handleAIHandoff(sessionId, configId, triggerMsg, aiReply) {
 
   const dashUrl = `${process.env.FRONTEND_URL}/dashboard/inbox?session=${sessionId}`;
 
-  if (cfg.notify_sms && getTwilio()) {
-    await getTwilio().messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
+  if (cfg.notify_sms) {
+    await sendText({
       to:   cfg.notify_sms,
       body: `🚨 AI handoff needed — visitor needs a human. Reply now: ${dashUrl}`
     }).catch(() => {});

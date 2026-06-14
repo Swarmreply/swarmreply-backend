@@ -1,4 +1,5 @@
 // ============================================
+const { smsEnabled } = require('./smsGate');
 // services/smsCampaignService.js
 // SMS Marketing Campaigns
 //
@@ -428,6 +429,7 @@ async function resolveRecipients(campaign) {
 }
 
 async function sendCampaignBatch(campaignId, locationId, message) {
+  if (!smsEnabled()) throw new Error('SMS sending is not enabled yet — texting goes live once A2P 10DLC registration is approved.');
   const twilio = getTwilio();
   if (!twilio) throw new Error('Twilio not configured');
 

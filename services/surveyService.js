@@ -1,4 +1,5 @@
 // ============================================
+const { sendText } = require('./smsGate');
 // services/surveyService.js
 // NPS & Post-Visit Survey Engine
 //
@@ -346,9 +347,6 @@ function buildScoreButtons(surveyUrl, scaleType, brandColor) {
 // ============================================
 
 async function sendSurveySMS({ config, contact, surveyUrl }) {
-  const twilio = getTwilio();
-  if (!twilio) throw new Error('Twilio not configured');
-
   const firstName = contact.name.split(' ')[0];
   const body = renderTokens(config.sms_body, {
     contact: { ...contact, firstName },
@@ -356,13 +354,12 @@ async function sendSurveySMS({ config, contact, surveyUrl }) {
     surveyUrl
   });
 
-  const message = await twilio.messages.create({
-    body,
-    from: process.env.TWILIO_PHONE_NUMBER,
-    to:   contact.phone
-  });
+  const r = await sendText({ to: contact.phone, body });
+  if (!r.sent) throw new Error(r.reason === 'sms_gated'
+    ? 'SMS sending is not enabled yet — texting goes live once A2P 10DLC registration is approved.'
+    : 'Twilio not configured');
 
-  return message.sid;
+  return r.sid;
 }
 
 // ============================================
