@@ -466,35 +466,37 @@ router.get('/stats', authenticateToken, async (req, res) => {
 // the prior 30 days for deltas.
 router.get('/grow/stats', authenticateToken, async (req, res) => {
   const customerId = req.user.customerId || req.user.id;
+  // Timeframe filter — drives every report on the Surveys & NPS tab.
+  const days = [7, 30, 90, 365].includes(parseInt(req.query.days)) ? parseInt(req.query.days) : 30;
 
   try {
     const [reqs, reqsPrev, sends, resp, respPrev, routed] = await Promise.all([
       query(`SELECT COUNT(*) sent, COUNT(*) FILTER (WHERE status='completed') completed
              FROM review_requests
-             WHERE customer_id = $1 AND created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+             WHERE customer_id = $1 AND created_at >= NOW() - make_interval(days => $2)`, [customerId, days]),
       query(`SELECT COUNT(*) sent, COUNT(*) FILTER (WHERE status='completed') completed
              FROM review_requests
              WHERE customer_id = $1
-               AND created_at >= NOW() - INTERVAL '60 days'
-               AND created_at <  NOW() - INTERVAL '30 days'`, [customerId]),
+               AND created_at >= NOW() - make_interval(days => $2 * 2)
+               AND created_at <  NOW() - make_interval(days => $2)`, [customerId, days]),
       query(`SELECT COUNT(*) sent
              FROM survey_sends ss JOIN locations l ON l.id = ss.location_id
-             WHERE l.customer_id = $1 AND ss.created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+             WHERE l.customer_id = $1 AND ss.created_at >= NOW() - make_interval(days => $2)`, [customerId, days]),
       query(`SELECT COUNT(*) responses, ROUND(AVG(nps_score)::numeric, 1) avg_nps,
                     COUNT(*) FILTER (WHERE nps_score >= 9) promoters,
                     COUNT(*) FILTER (WHERE nps_score BETWEEN 7 AND 8) passives,
                     COUNT(*) FILTER (WHERE nps_score <= 6) detractors
              FROM survey_responses
-             WHERE customer_id = $1 AND completed_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+             WHERE customer_id = $1 AND completed_at >= NOW() - make_interval(days => $2)`, [customerId, days]),
       query(`SELECT ROUND(AVG(nps_score)::numeric, 1) avg_nps
              FROM survey_responses
              WHERE customer_id = $1
-               AND completed_at >= NOW() - INTERVAL '60 days'
-               AND completed_at <  NOW() - INTERVAL '30 days'`, [customerId]),
+               AND completed_at >= NOW() - make_interval(days => $2 * 2)
+               AND completed_at <  NOW() - make_interval(days => $2)`, [customerId, days]),
       query(`SELECT COUNT(*) routed
              FROM survey_sends ss JOIN locations l ON l.id = ss.location_id
              WHERE l.customer_id = $1 AND ss.status = 'clicked'
-               AND ss.created_at >= NOW() - INTERVAL '30 days'`, [customerId]),
+               AND ss.created_at >= NOW() - make_interval(days => $2)`, [customerId, days]),
     ]);
 
     const i = (v) => parseInt(v) || 0;
@@ -508,6 +510,7 @@ router.get('/grow/stats', authenticateToken, async (req, res) => {
     const avgNpsPrev = respPrev.rows[0]?.avg_nps != null ? Number(respPrev.rows[0].avg_nps) : null;
 
     res.json({
+      days,
       requests: {
         sent,
         sentDelta: sent - sentPrev,
@@ -2298,20 +2301,27 @@ router.get('/contacts/imports', authenticateToken, async (req, res) => {
 router.get('/contacts', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
-    const result = await query(
-      `SELECT c.id, c.name, c.email, c.phone, c.segment, rr.last_request
-         FROM contacts c
-         LEFT JOIN (
-           SELECT lower(contact_email) AS email, MAX(created_at) AS last_request
-             FROM review_requests
-            WHERE customer_id = $1 AND contact_email IS NOT NULL
-            GROUP BY lower(contact_email)
-         ) rr ON lower(c.email) = rr.email
-        WHERE c.customer_id = $1
-        ORDER BY c.created_at DESC
-        LIMIT 1000`,
-      [customerId]
-    ).catch(() => ({ rows: [] }));
+    const baseSelect = (withOptOut) => `
+      SELECT c.id, c.name, c.email, c.phone, c.segment,
+             ${withOptOut ? 'COALESCE(c.opted_out, false)' : 'false'} AS opted_out,
+             rr.last_request, COALESCE(rr.request_count, 0) AS request_count
+        FROM contacts c
+        LEFT JOIN (
+          SELECT lower(contact_email) AS email, MAX(created_at) AS last_request, COUNT(*) AS request_count
+            FROM review_requests
+           WHERE customer_id = $1 AND contact_email IS NOT NULL
+           GROUP BY lower(contact_email)
+        ) rr ON lower(c.email) = rr.email
+       WHERE c.customer_id = $1
+       ORDER BY c.created_at DESC
+       LIMIT 1000`;
+    let result;
+    try {
+      result = await query(baseSelect(true), [customerId]);
+    } catch (e) {
+      // opted_out column may not exist yet (migration pending) — degrade gracefully.
+      result = await query(baseSelect(false), [customerId]).catch(() => ({ rows: [] }));
+    }
     const contacts = result.rows;
     const segCounts = {};
     contacts.forEach(c => { const s = c.segment || 'all'; segCounts[s] = (segCounts[s] || 0) + 1; });
@@ -2351,6 +2361,27 @@ router.post('/contacts/segment', authenticateToken, async (req, res) => {
   }
 });
 
+// ── POST /api/contacts/:id/opt-out ────────────────────────────────────────────
+// Manually opt a contact in or out of review requests. Opted-out contacts are
+// skipped by bulk send. Body: { opted_out: true|false } (defaults to true).
+router.post('/contacts/:id/opt-out', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const optedOut = req.body?.opted_out !== false;
+    const r = await query(
+      `UPDATE contacts
+          SET opted_out = $1,
+              opted_out_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+        WHERE id = $2 AND customer_id = $3`,
+      [optedOut, req.params.id, customerId]
+    );
+    res.json({ success: true, opted_out: optedOut, updated: r.rowCount || 0 });
+  } catch (err) {
+    logger.error('contact opt-out error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── BULK SEND REVIEW REQUESTS ─────────────────────────────────────────────────
 router.post('/review-requests/bulk-send', authenticateToken, async (req, res) => {
   try {
@@ -2370,10 +2401,21 @@ router.post('/review-requests/bulk-send', authenticateToken, async (req, res) =>
     const crypto = require('crypto');
     const brandColor = '#f5c842';
     const brandLogo = 'https://swarmreply.com/bee-logo.png';
-    let sent = 0, failed = 0;
+    let sent = 0, failed = 0, skipped = 0;
+
+    // Skip anyone the customer manually opted out of review requests.
+    let optedOut = new Set();
+    try {
+      const oo = await query(
+        "SELECT lower(email) AS email FROM contacts WHERE customer_id=$1 AND opted_out=true AND email IS NOT NULL",
+        [customerId]
+      );
+      optedOut = new Set(oo.rows.map(r => r.email));
+    } catch (e) { /* opted_out column may not exist yet */ }
 
     for (const t of targets) {
       if (!t.email || !t.email.trim()) { failed++; continue; }
+      if (optedOut.has(t.email.trim().toLowerCase())) { skipped++; continue; }
       const token = crypto.randomBytes(16).toString('hex');
       const firstName = (t.name || '').trim().split(' ')[0] || 'there';
       await query(
@@ -2394,8 +2436,8 @@ router.post('/review-requests/bulk-send', authenticateToken, async (req, res) =>
         if (error || !data?.id) { failed++; } else { sent++; }
       } catch (e) { failed++; logger.warn('bulk email error ' + t.email + ':', e.message); }
     }
-    logger.info('Bulk send: ' + sent + ' sent, ' + failed + ' failed');
-    res.json({ success: true, sent, failed });
+    logger.info('Bulk send: ' + sent + ' sent, ' + failed + ' failed, ' + skipped + ' skipped (opted out)');
+    res.json({ success: true, sent, failed, skipped });
   } catch (err) {
     logger.error('bulk-send error:', err.message);
     res.status(500).json({ error: err.message });
