@@ -15,6 +15,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
 const { sendText, smsStatus } = require('../services/smsGate');
+const smsCampaignService = require('../services/smsCampaignService');
 
 // ============================================
 // HEALTH CHECK
@@ -2244,37 +2245,92 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'No rows to import' });
     }
 
-    let imported = 0, skipped = 0;
+    // Resolve the customer's primary location so phone contacts can also flow
+    // into the SMS campaigns audience (Campaigns › Contacts / sms_contacts).
+    const locRes = await query(
+      'SELECT id FROM locations WHERE customer_id=$1 ORDER BY created_at ASC LIMIT 1',
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+    const locationId = locRes.rows[0]?.id || null;
+
+    let imported = 0, updated = 0, skipped = 0;
+    const smsRows = [];   // phone-bearing rows to mirror into Campaigns › Contacts
     for (const r of rows) {
       const email = (r.email || '').trim().toLowerCase();
       const name  = (r.name || '').trim();
       const phone = (r.phone || '').trim();
-      // Must have at least an email or phone
-      if (!email && !phone) { skipped++; continue; }
+      const phoneDigits = phone.replace(/\D/g, '');
+      // Email is the only required field.
+      if (!email) { skipped++; continue; }
+      // Per-row segment tag from the CSV (falls back to a body-level segment).
+      const rowSeg = (r.segment || segment || '').toString().trim().toLowerCase();
+      const segVal = rowSeg || null;
+
       try {
-        const result = await query(
-          `INSERT INTO contacts (customer_id, name, email, phone, segment)
-           VALUES ($1,$2,$3,$4,$5)
-           ON CONFLICT (customer_id, lower(email)) WHERE email IS NOT NULL
-           DO UPDATE SET name=COALESCE(EXCLUDED.name, contacts.name),
-                         phone=COALESCE(EXCLUDED.phone, contacts.phone)
-           RETURNING (xmax = 0) AS inserted`,
-          [customerId, name || null, email || null, phone || null, segment || 'all']
-        );
-        if (result.rows[0]?.inserted) imported++; else skipped++;
+        // 1) Overwrite an existing contact that matches on phone (compared digits-only,
+        //    so formatting differences don't create duplicates).
+        let matchedId = null;
+        if (phoneDigits) {
+          const m = await query(
+            `SELECT id FROM contacts
+              WHERE customer_id=$1 AND phone IS NOT NULL
+                AND regexp_replace(phone, '\\D', '', 'g') = $2
+              LIMIT 1`,
+            [customerId, phoneDigits]
+          ).catch(() => ({ rows: [] }));
+          matchedId = m.rows[0]?.id || null;
+        }
+
+        if (matchedId) {
+          await query(
+            `UPDATE contacts
+                SET name=COALESCE($2, name), email=$3, phone=$4, segment=COALESCE($5, segment)
+              WHERE id=$1`,
+            [matchedId, name || null, email || null, phone || null, segVal]
+          );
+          updated++;
+        } else {
+          // 2) Otherwise upsert on email — overwrites an existing same-email contact.
+          const result = await query(
+            `INSERT INTO contacts (customer_id, name, email, phone, segment)
+             VALUES ($1,$2,$3,$4, COALESCE($5, 'all'))
+             ON CONFLICT (customer_id, lower(email)) WHERE email IS NOT NULL
+             DO UPDATE SET name=COALESCE(EXCLUDED.name, contacts.name),
+                           phone=COALESCE(EXCLUDED.phone, contacts.phone),
+                           segment=COALESCE($5, contacts.segment)
+             RETURNING (xmax = 0) AS inserted`,
+            [customerId, name || null, email || null, phone || null, segVal]
+          );
+          if (result.rows[0]?.inserted) imported++; else updated++;
+        }
+
+        if (phoneDigits) {
+          smsRows.push({ name: name || null, phone, email: email || null, tags: segVal ? [segVal] : [] });
+        }
       } catch (e) {
         skipped++;
       }
     }
 
+    // Mirror phone contacts into the SMS campaigns audience (best-effort).
+    // upsertContact validates the number and dedups on (location_id, phone),
+    // so invalid or already-present numbers are skipped without erroring.
+    let smsImported = 0;
+    if (locationId && smsRows.length) {
+      try {
+        const r = await smsCampaignService.bulkImportContacts(locationId, smsRows, 'import');
+        smsImported = r.imported || 0;
+      } catch (e) { logger.warn('sms mirror import error: ' + e.message); }
+    }
+
     await query(
       `INSERT INTO contact_imports (customer_id, filename, row_count, imported, skipped)
        VALUES ($1,$2,$3,$4,$5)`,
-      [customerId, filename || 'import.csv', rows.length, imported, skipped]
+      [customerId, filename || 'import.csv', rows.length, imported + updated, skipped]
     ).catch(() => {});
 
-    logger.info('Contact import: ' + imported + ' imported, ' + skipped + ' skipped for ' + customerId);
-    res.json({ success: true, imported, skipped, total: rows.length });
+    logger.info('Contact import: ' + imported + ' new, ' + updated + ' updated, ' + skipped + ' skipped, ' + smsImported + ' to SMS for ' + customerId);
+    res.json({ success: true, imported, updated, skipped, smsImported, total: rows.length });
   } catch (err) {
     logger.error('contacts/import error:', err.message);
     res.status(500).json({ error: err.message });
