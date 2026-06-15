@@ -4,9 +4,11 @@ let _key = null;
 
 function getKey() {
   if (_key) return _key;
-  const raw = process.env.ENCRYPTION_KEY;
+  let raw = process.env.ENCRYPTION_KEY;
   if (!raw) throw new Error('ENCRYPTION_KEY environment variable is not set. Add it in Railway Variables.');
-  if (raw.length !== 64) throw new Error('ENCRYPTION_KEY must be 64 hex characters. Generate with: openssl rand -hex 32');
+  // Tolerate stray whitespace/newlines/quotes that dashboards sometimes add on paste.
+  raw = raw.trim().replace(/^["']|["']$/g, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) throw new Error('ENCRYPTION_KEY must be 64 hex characters. Generate with: openssl rand -hex 32');
   _key = Buffer.from(raw, 'hex');
   return _key;
 }
