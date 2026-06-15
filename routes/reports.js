@@ -12,7 +12,6 @@ const router  = express.Router();
 const { query } = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
-const competitorService = require('../services/competitorService');
 
 // Whitelist range -> SQL interval. Whitelisting (not interpolating user input)
 // keeps this injection-safe.
@@ -119,94 +118,6 @@ router.get('/analytics', authenticateToken, async (req, res) => {
   } catch (err) {
     logger.error('Reports analytics error:', err.message);
     res.status(500).json({ error: 'Failed to load analytics' });
-  }
-});
-
-// ============================================
-// COMPETITORS — Reports › Competitors
-// Combines two data sources we already collect:
-//  1. Google Places nearby benchmark (rating + review count, snapshotted daily)
-//  2. AI-perceived competitors from the latest LLM visibility scan
-// Day-one, zero customer effort: coordinates are resolved from the business
-// name + city, and the nearby scan auto-runs in the background on first load.
-// ============================================
-
-// In-flight background scans, so rapid refetches don't launch duplicates.
-const scanningLocations = new Set();
-
-async function primaryLocationId(customerId) {
-  const r = await query(
-    'SELECT id FROM locations WHERE customer_id=$1 ORDER BY created_at ASC LIMIT 1',
-    [customerId]
-  ).catch(() => ({ rows: [] }));
-  return r.rows[0] ? r.rows[0].id : null;
-}
-
-async function getAiCompetitors(customerId) {
-  const r = await query(
-    `SELECT report_data FROM llm_reports
-      WHERE customer_id=$1 ORDER BY last_scan_at DESC NULLS LAST LIMIT 1`,
-    [customerId]
-  ).catch(() => ({ rows: [] }));
-  const data = (r.rows[0] && r.rows[0].report_data) || {};
-  const list = Array.isArray(data.topCompetitors) ? data.topCompetitors : [];
-  // Normalise across the shapes we store ({competitor,mentions} or {name,reasons}).
-  return list
-    .map(c => ({
-      name: c.competitor || c.name || '',
-      mentions: c.mentions != null ? Number(c.mentions) : null,
-      reasons: Array.isArray(c.reasons) ? c.reasons : [],
-    }))
-    .filter(c => c.name);
-}
-
-// GET /api/reports/competitors
-router.get('/competitors', authenticateToken, async (req, res) => {
-  const customerId = req.user.customerId || req.user.id;
-  try {
-    const locationId = await primaryLocationId(customerId);
-    const aiCompetitors = await getAiCompetitors(customerId);
-
-    if (!locationId) {
-      return res.json({ benchmark: { hasData: false, reason: 'no_location' }, aiCompetitors, scanning: false });
-    }
-
-    const benchmark = await competitorService.getCompetitorBenchmark(locationId)
-      .catch(() => ({ hasData: false }));
-
-    // Day-one, zero-effort: with no nearby benchmark yet, kick off a background
-    // scan (non-blocking) so it populates for the next load.
-    let isScanning = scanningLocations.has(locationId);
-    if (!benchmark.hasData && process.env.GOOGLE_PLACES_API_KEY && !isScanning) {
-      scanningLocations.add(locationId);
-      isScanning = true;
-      competitorService.findCompetitors(locationId)
-        .catch(e => logger.warn('competitor background scan failed: ' + e.message))
-        .finally(() => scanningLocations.delete(locationId));
-    }
-
-    res.json({ benchmark, aiCompetitors, scanning: isScanning });
-  } catch (err) {
-    logger.error('Reports competitors error:', err.message);
-    res.status(500).json({ error: 'Failed to load competitors' });
-  }
-});
-
-// POST /api/reports/competitors/refresh — re-run the nearby scan on demand.
-router.post('/competitors/refresh', authenticateToken, async (req, res) => {
-  const customerId = req.user.customerId || req.user.id;
-  try {
-    const locationId = await primaryLocationId(customerId);
-    if (!locationId) return res.status(400).json({ error: 'No location to scan' });
-    if (!process.env.GOOGLE_PLACES_API_KEY) {
-      return res.status(503).json({ error: 'Competitor scanning is not configured yet.' });
-    }
-    await competitorService.findCompetitors(locationId);
-    const benchmark = await competitorService.getCompetitorBenchmark(locationId);
-    res.json({ benchmark });
-  } catch (err) {
-    logger.error('Competitor refresh error:', err.message);
-    res.status(500).json({ error: err.message || 'Refresh failed' });
   }
 });
 
