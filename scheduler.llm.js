@@ -38,7 +38,7 @@ async function runDueScans() {
          JOIN customers c ON c.id = r.customer_id
         WHERE r.last_scan_at IS NOT NULL
           AND r.last_scan_at <= NOW() - INTERVAL '7 days'
-          AND c.status = 'active'
+          AND c.status IN ('active', 'cancelling')
           AND c.ai_scans_enabled IS NOT FALSE`
     );
     due = dueRes.rows.length;

@@ -40,7 +40,7 @@ async function runDueRankChecks() {
          JOIN locations l ON l.id = rr.location_id
          JOIN customers c ON c.id = l.customer_id
         WHERE l.is_active = true
-          AND c.status = 'active'
+          AND c.status IN ('active', 'cancelling')
           AND c.rank_scans_enabled IS NOT FALSE
           AND EXISTS (
             SELECT 1 FROM rank_keywords k

@@ -40,7 +40,7 @@ async function runDueCompetitorScans() {
          JOIN locations l ON l.id = cs.location_id
          JOIN customers c ON c.id = l.customer_id
         WHERE l.is_active = true
-          AND c.status = 'active'
+          AND c.status IN ('active', 'cancelling')
           AND c.ai_scans_enabled IS NOT FALSE
         GROUP BY cs.location_id
        HAVING MAX(cs.snapshot_date) <= CURRENT_DATE - 7`
