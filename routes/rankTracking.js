@@ -12,18 +12,29 @@ async function getLocationId(customerId) {
   return r.rows[0]?.id;
 }
 
+// The automated rank check runs every Monday (see scheduler.rank.js cron '0 9 * * 1').
+// Surface the next Monday so the UI can show a "next scan" date after the first check.
+function nextMondayAfter(ref) {
+  const d = new Date(ref);
+  do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() !== 1);
+  d.setUTCHours(9, 0, 0, 0);
+  return d;
+}
+
 // GET /api/rank — get full rank history for dashboard
 router.get('/', authenticateToken, async (req, res) => {
   try {
     const locationId = await getLocationId(req.user.customerId);
-    if (!locationId) return res.json({ keywords: [], lastChecked: null });
+    if (!locationId) return res.json({ keywords: [], lastChecked: null, nextCheckAt: null });
     const days    = parseInt(req.query.days) || 90;
     const history = await rank.getRankHistory(locationId, days);
     // Get last check time
     const lastRes = await query(
       'SELECT MAX(checked_at) as last FROM rank_results WHERE location_id=$1',[locationId]
     );
-    res.json({ success: true, keywords: history, lastChecked: lastRes.rows[0]?.last || null });
+    const last = lastRes.rows[0]?.last || null;
+    const nextCheckAt = nextMondayAfter(last || new Date()).toISOString();
+    res.json({ success: true, keywords: history, lastChecked: last, nextCheckAt });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
