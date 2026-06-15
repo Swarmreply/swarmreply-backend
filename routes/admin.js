@@ -21,7 +21,7 @@ const { estimateMonthly, syncLocationBilling } = require('../services/locationBi
 function decodeAuth(req) {
   const auth = req.headers['authorization'];
   if (!auth || !auth.startsWith('Bearer ')) return null;
-  try { return jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET); }
+  try { return jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET, { algorithms: ['HS256'] }); }
   catch (e) { return null; }
 }
 
