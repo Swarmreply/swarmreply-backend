@@ -919,15 +919,22 @@ const stripeWebhookHandler = async (req, res) => {
         const subscription = event.data.object;
         const customerId = subscription.metadata?.customerId;
         const plan = getPlanFromPriceId(subscription.items.data[0]?.price?.id);
+        // Map Stripe's subscription status to our account status, so a failed
+        // renewal locks the account and a recovery unlocks it.
+        const subStatus = subscription.status;
+        let acctStatus = 'active';
+        if (subStatus === 'past_due') acctStatus = 'past_due';
+        else if (subStatus === 'unpaid') acctStatus = 'locked';
+        else if (subStatus === 'canceled') acctStatus = 'cancelled';
 
         if (customerId) {
           await query(
             `UPDATE customers
              SET plan = $1, status = $2, updated_at = NOW()
              WHERE id = $3`,
-            [plan, 'active', customerId]
+            [plan, acctStatus, customerId]
           );
-          logger.info(`Customer ${customerId} plan updated to ${plan}`);
+          logger.info(`Customer ${customerId} plan=${plan} status=${acctStatus} (stripe: ${subStatus})`);
         }
         break;
       }
@@ -958,7 +965,37 @@ const stripeWebhookHandler = async (req, res) => {
       case 'invoice.payment_failed': {
         const invoice = event.data.object;
         logger.warn(`Payment failed for customer: ${invoice.customer}`);
-        // Could send alert email here
+        if (invoice.customer) {
+          await query(
+            `UPDATE customers
+                SET status = 'past_due',
+                    payment_failed_at = NOW(),
+                    payment_failure_count = COALESCE(payment_failure_count, 0) + 1,
+                    updated_at = NOW()
+              WHERE stripe_customer_id = $1
+                AND status NOT IN ('cancelled', 'cancelling')`,
+            [invoice.customer]
+          );
+          logger.warn(`Account for stripe customer ${invoice.customer} marked past_due`);
+        }
+        break;
+      }
+
+      // Payment recovered — clear the lock
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object;
+        if (invoice.customer) {
+          await query(
+            `UPDATE customers
+                SET status = 'active',
+                    payment_failed_at = NULL,
+                    payment_failure_count = 0,
+                    updated_at = NOW()
+              WHERE stripe_customer_id = $1
+                AND status IN ('past_due', 'locked')`,
+            [invoice.customer]
+          );
+        }
         break;
       }
     }

@@ -444,6 +444,72 @@ router.patch('/customers/:id/status', requireAdmin, async (req, res) => {
   }
 });
 
+// ── Get Found scan controls ──────────────────────────────────────────────
+// Pause or resume the weekly auto-scans (AI Visibility and/or Rank Tracking).
+router.patch('/customers/:id/get-found', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const sets = [];
+    const vals = [];
+    let i = 1;
+    if (typeof req.body.aiScansEnabled === 'boolean')   { sets.push(`ai_scans_enabled = $${i++}`);   vals.push(req.body.aiScansEnabled); }
+    if (typeof req.body.rankScansEnabled === 'boolean') { sets.push(`rank_scans_enabled = $${i++}`); vals.push(req.body.rankScansEnabled); }
+    if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+    vals.push(id);
+    const r = await query(
+      `UPDATE customers SET ${sets.join(', ')}, updated_at = NOW()
+        WHERE id = $${i}
+        RETURNING ai_scans_enabled, rank_scans_enabled`,
+      vals
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Customer not found' });
+    await query(
+      'INSERT INTO audit_log (customer_id, action, details) VALUES ($1, $2, $3)',
+      [id, 'admin_get_found_toggle', JSON.stringify({ ...req.body, admin: req.admin.email })]
+    ).catch(() => {});
+    logger.info(`Admin Get Found toggle: customer ${id} → ${JSON.stringify(r.rows[0])}`);
+    res.json({ success: true, ...r.rows[0] });
+  } catch (err) {
+    logger.error('Admin get-found toggle error: ' + err.message);
+    res.status(500).json({ error: 'Failed to update scan settings' });
+  }
+});
+
+// Reset the searches behind Get Found. target: 'ai' | 'rank' | 'both'.
+// 'ai'  → clears the AI Visibility queries and nulls the scan clock (so the
+//          weekly scheduler skips this account until a fresh scan is run).
+// 'rank'→ deactivates every rank keyword across the account's locations.
+// Either way, the corresponding auto-scans stop.
+router.post('/customers/:id/get-found/reset', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const target = req.body.target || 'both';
+    const done = [];
+    if (target === 'ai' || target === 'both') {
+      await query(`UPDATE llm_settings SET custom_queries = '[]' WHERE customer_id = $1`, [id]).catch(() => {});
+      await query(`UPDATE llm_reports SET last_scan_at = NULL WHERE customer_id = $1`, [id]).catch(() => {});
+      done.push('ai');
+    }
+    if (target === 'rank' || target === 'both') {
+      await query(
+        `UPDATE rank_keywords SET active = false
+          WHERE location_id IN (SELECT id FROM locations WHERE customer_id = $1)`,
+        [id]
+      ).catch(() => {});
+      done.push('rank');
+    }
+    await query(
+      'INSERT INTO audit_log (customer_id, action, details) VALUES ($1, $2, $3)',
+      [id, 'admin_get_found_reset', JSON.stringify({ target, admin: req.admin.email })]
+    ).catch(() => {});
+    logger.info(`Admin Get Found reset: customer ${id} → ${done.join(', ')}`);
+    res.json({ success: true, reset: done });
+  } catch (err) {
+    logger.error('Admin get-found reset error: ' + err.message);
+    res.status(500).json({ error: 'Failed to reset searches' });
+  }
+});
+
 // ── UPDATE NOTES ──────────────────────────────
 // PATCH /api/admin/customers/:id/notes
 router.patch('/customers/:id/notes', requireAdmin, async (req, res) => {

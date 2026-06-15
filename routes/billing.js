@@ -78,6 +78,21 @@ async function createPortalSession(customerId, returnPath) {
 
 // ── ROUTES ────────────────────────────────────────────────────────────────────
 
+// GET /api/billing/health
+// Lightweight lock-state check polled by the dashboard. Authoritative source
+// is customers.status, which the Stripe webhook keeps current.
+router.get('/health', authenticateToken, async (req, res) => {
+  try {
+    const r = await query('SELECT status FROM customers WHERE id = $1', [req.user.customerId]);
+    const status = r.rows[0] && r.rows[0].status;
+    const locked = status === 'past_due' || status === 'locked';
+    res.json({ success: true, billing: { status, locked, bannerLevel: 'none', graceDaysLeft: 0 } });
+  } catch (err) {
+    // Never hard-block the dashboard on a health-check failure.
+    res.json({ success: true, billing: { locked: false } });
+  }
+});
+
 // GET /api/billing/status
 // Full subscription status for the billing dashboard
 router.get('/status', authenticateToken, async (req, res) => {
