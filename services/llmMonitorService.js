@@ -576,8 +576,10 @@ function extractCompetitors(allTexts, businessName) {
 // Returns the parsed object on success, or null on failure (caller falls back).
 async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers) {
   if (!providers || !providers.length) return null;
-  // Prefer larger-output models for this structured call: OpenAI > Claude > Gemini.
-  const order  = ['chatgpt', 'claude', 'gemini'];
+  // This is a single synthesis call (summary + competitors + recommendations),
+  // run once per location per scan — so cost is negligible. Prefer Gemini (free
+  // tier) and fall back to the others if it isn't configured or the call fails.
+  const order  = ['gemini', 'chatgpt', 'claude'];
   const chosen = order.map(n => providers.find(p => p.name === n)).find(Boolean) || providers[0];
 
   const corpus = allTexts.filter(Boolean).join('\n\n---\n\n').slice(0, 6000);
@@ -593,10 +595,12 @@ async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScor
     `Below are the actual AI assistant responses.\n\n` +
     `Respond with ONLY a JSON object in exactly this shape, no other text:\n` +
     `{\n` +
+    `  "executiveSummary": "<2-4 sentence plain-English overview written for the owner of ${businessName}: how visible they are in AI answers this week, the trend vs last week, which competitors the AI favoured and the main reason, and the single biggest opportunity. Address them directly. Honest and specific — no hype, no guarantees.>",\n` +
     `  "competitors": [{ "name": "<real business name>", "reasons": ["<short reason the AI favoured them, grounded in the text>"] }],\n` +
     `  "recommendations": [{ "priority": "high|medium|low", "action": "<specific action ${businessName} can take>", "rationale": "<why it matters, referencing a missing query or a competitor strength>", "steps": ["<concrete how-to step>", "<another step>"] }]\n` +
     `}\n\n` +
     `Rules:\n` +
+    `- executiveSummary: ground every claim in the actual responses and the score (${overallScore}/100). Mention a real competitor name if one stands out. Keep it to 2-4 sentences.\n` +
     `- competitors: only real business/brand names mentioned as alternatives to ${businessName}; exclude ${businessName}; max 5; each reason <= 10 words and drawn from the responses (ratings, review counts, specialties the AI cited).\n` +
     `- recommendations: 3-5 concrete, prioritised actions grounded in the missing queries above and what competitors are praised for. No generic filler.\n` +
     `- steps: for EACH recommendation, give 2-4 specific, practical how-to steps the owner can actually do. Tailor them to the business type you infer from the responses — e.g. a software/SaaS company should get steps about review sites like G2/Capterra, comparison/"vs alternatives" pages, and content; a local service business should get steps about Google Business Profile, local directories/citations, and asking customers for reviews. Steps must be real actions (improve reviews, web presence, listings, on-page content) — never promise that an action guarantees a ranking change.\n\n` +
@@ -611,6 +615,7 @@ async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScor
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     return {
+      executiveSummary: typeof parsed.executiveSummary === 'string' ? parsed.executiveSummary.trim() : '',
       competitors:    Array.isArray(parsed.competitors)    ? parsed.competitors    : [],
       recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
     };
@@ -618,6 +623,24 @@ async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScor
     logger.warn('Insights extraction (LLM) failed, falling back to heuristic: ' + e.message);
     return null;
   }
+}
+
+// Honest, templated executive summary used when the LLM insights call fails —
+// grounded entirely in the real score, trend, mention counts and competitors.
+function buildFallbackSummary(businessName, score, prevScore, mentions, queries, competitors, recommendations) {
+  const delta = (prevScore != null) ? (score - prevScore) : 0;
+  const trend = delta > 0 ? `up ${delta} point${delta === 1 ? '' : 's'} from last week`
+              : delta < 0 ? `down ${Math.abs(delta)} point${Math.abs(delta) === 1 ? '' : 's'} from last week`
+              : 'about level with last week';
+  let s = `This week AI assistants mentioned ${businessName} in ${mentions} of ${queries} test questions — a ${score}% visibility score, ${trend}.`;
+  const top = (competitors || [])[0];
+  if (top && top.competitor) {
+    const reason = (top.reasons && top.reasons[0]) ? ` (${String(top.reasons[0]).toLowerCase()})` : '';
+    s += ` ${top.competitor} came up most often as an alternative${reason}.`;
+  }
+  const rec = (recommendations || [])[0];
+  if (rec && rec.action) s += ` Biggest opportunity right now: ${String(rec.action).replace(/\.\s*$/, '')}.`;
+  return s;
 }
 
 // Honest fallback recommendations when the LLM insights call fails — still
@@ -863,6 +886,10 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
     ...competitors,
   ];
 
+  const executiveSummary = (insights && insights.executiveSummary)
+    ? insights.executiveSummary
+    : buildFallbackSummary(businessName, overallScore, prevScore, totalMentions, totalQueries, competitors, recommendations);
+
   const now = new Date();
   const nextScan = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
@@ -884,6 +911,7 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
     topCompetitors,
     queryGaps,
     recommendations,
+    executiveSummary,
     skippedProviders,
     nextScanAt: nextScan.toISOString(),
     lastScanAt: now.toISOString(),
