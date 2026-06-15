@@ -132,26 +132,36 @@ router.get('/analytics', authenticateToken, async (req, res) => {
 // In-flight scans, so a manual refresh doesn't overlap with itself.
 const scanningLocations = new Set();
 
-async function primaryLocationId(customerId) {
+async function primaryLocation(customerId) {
   const r = await query(
-    'SELECT id FROM locations WHERE customer_id=$1 ORDER BY created_at ASC LIMIT 1',
+    'SELECT id, business_name, city, state FROM locations WHERE customer_id=$1 ORDER BY created_at ASC LIMIT 1',
     [customerId]
   ).catch(() => ({ rows: [] }));
-  return r.rows[0] ? r.rows[0].id : null;
+  return r.rows[0] || null;
+}
+
+async function primaryLocationId(customerId) {
+  const loc = await primaryLocation(customerId);
+  return loc ? loc.id : null;
 }
 
 // GET /api/reports/competitors — read the latest nearby benchmark (no scan).
 router.get('/competitors', authenticateToken, async (req, res) => {
   const customerId = req.user.customerId || req.user.id;
   try {
-    const locationId = await primaryLocationId(customerId);
+    const loc = await primaryLocation(customerId);
     const configured = !!process.env.GOOGLE_PLACES_API_KEY;
-    if (!locationId) {
-      return res.json({ benchmark: { hasData: false, reason: 'no_location' }, configured });
+    if (!loc) {
+      return res.json({ benchmark: { hasData: false, reason: 'no_location' }, configured, businessName: null, geoReady: false });
     }
-    const benchmark = await competitorService.getCompetitorBenchmark(locationId)
+    const benchmark = await competitorService.getCompetitorBenchmark(loc.id)
       .catch(() => ({ hasData: false }));
-    res.json({ benchmark, configured });
+    res.json({
+      benchmark,
+      configured,
+      businessName: loc.business_name || null,
+      geoReady: !!(loc.city && loc.state),
+    });
   } catch (err) {
     logger.error('Reports competitors error:', err.message);
     res.status(500).json({ error: 'Failed to load competitors' });
