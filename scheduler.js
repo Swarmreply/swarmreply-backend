@@ -11,6 +11,7 @@ const { resyncPendingBilling } = require('./services/locationBilling');
 const { processDueScheduledRequests } = require('./services/integrationService');
 const { runDailySync } = require('./services/listingsService');
 const { runWeeklyDirectoryScan } = require('./services/directoryCheckService');
+const { runDueCompetitorScans } = require('./scheduler.competitors');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -45,6 +46,20 @@ function startScheduler() {
     } catch (error) {
       logger.error('Scheduler: directory scan failed:', error.message);
       captureError(error, { job: 'listings-directory-scan' });
+    }
+  });
+
+  // ============================================
+  // JOB -0.25: Weekly competitor re-scan — refresh nearby
+  // rating/review benchmarks for locations that opted in
+  // (Mondays 08:00, after the directory scan)
+  // ============================================
+  cron.schedule('0 8 * * 1', async () => {
+    try {
+      await runDueCompetitorScans();
+    } catch (error) {
+      logger.error('Scheduler: competitor scan failed:', error.message);
+      captureError(error, { job: 'competitor-weekly-scan' });
     }
   });
 
