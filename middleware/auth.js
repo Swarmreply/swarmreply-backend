@@ -44,6 +44,30 @@ async function authenticateToken(req, res, next) {
       }
     }
 
+    // ── Account payment lock ──────────────────────────────────────────────
+    // If the account's payment is past due or locked, block the whole platform
+    // except the billing/logout endpoints they need in order to fix it.
+    try {
+      if (req.user.customerId) {
+        const { query } = require('../database/db');
+        const cRes = await query('SELECT status FROM customers WHERE id = $1', [req.user.customerId]);
+        const status = cRes.rows[0] && cRes.rows[0].status;
+        req.accountStatus = status;
+        if (status === 'past_due' || status === 'locked') {
+          const url = req.originalUrl || req.url || '';
+          const allowed = /\/(billing|portal|customers\/logout|auth\/logout)/i.test(url);
+          if (!allowed) {
+            return res.status(402).json({
+              error: 'Your subscription payment is past due. Please update your billing details to restore access.',
+              code: 'PAYMENT_PAST_DUE',
+            });
+          }
+        }
+      }
+    } catch (e) {
+      // Fail open — never lock out a paying customer because of a status lookup hiccup.
+    }
+
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
