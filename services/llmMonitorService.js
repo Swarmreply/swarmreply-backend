@@ -574,7 +574,7 @@ function extractCompetitors(allTexts, businessName) {
 //   - recommendations: prioritized, specific actions grounded in the query gaps
 //     and competitor strengths (feature 4)
 // Returns the parsed object on success, or null on failure (caller falls back).
-async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers) {
+async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers, prevScore) {
   if (!providers || !providers.length) return null;
   // This is a single synthesis call (summary + competitors + recommendations),
   // run once per location per scan — so cost is negligible. Prefer Gemini (free
@@ -591,16 +591,17 @@ async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScor
     `You are analysing how AI assistants describe local businesses, to help "${businessName}" become more visible in AI answers.\n\n` +
     `Business: ${businessName}\n` +
     `Current AI visibility score: ${overallScore}/100\n` +
+    `Last week's score: ${prevScore != null ? prevScore + '/100' : 'no prior scan (this is their first)'}\n` +
     `Search queries where ${businessName} is MISSING from the AI answers:\n${gapList}\n\n` +
     `Below are the actual AI assistant responses.\n\n` +
     `Respond with ONLY a JSON object in exactly this shape, no other text:\n` +
     `{\n` +
-    `  "executiveSummary": "<2-4 sentence plain-English overview written for the owner of ${businessName}: how visible they are in AI answers this week, the trend vs last week, which competitors the AI favoured and the main reason, and the single biggest opportunity. Address them directly. Honest and specific — no hype, no guarantees.>",\n` +
+    `  "executiveSummary": "<3-5 sentence plain-English overview written for the owner of ${businessName}. Cover: how visible they are in AI answers and what that score actually means for them in practice (e.g. a low score means when customers ask AI to recommend a business like theirs, competitors are named instead); the accurate trend vs last week's score above; and which competitor came up most and the specific reason the AI favoured them. Address the owner directly, be concrete, no hype or guarantees. Do NOT list the action steps here — those are returned separately in recommendations.>",\n` +
     `  "competitors": [{ "name": "<real business name>", "reasons": ["<short reason the AI favoured them, grounded in the text>"] }],\n` +
     `  "recommendations": [{ "priority": "high|medium|low", "action": "<specific action ${businessName} can take>", "rationale": "<why it matters, referencing a missing query or a competitor strength>", "steps": ["<concrete how-to step>", "<another step>"] }]\n` +
     `}\n\n` +
     `Rules:\n` +
-    `- executiveSummary: ground every claim in the actual responses and the score (${overallScore}/100). Mention a real competitor name if one stands out. Keep it to 2-4 sentences.\n` +
+    `- executiveSummary: ground every claim in the actual responses and the score (${overallScore}/100). State the trend honestly against last week's score above (if this is their first scan, say so rather than inventing a trend). Interpret what the score means in plain terms. Mention a real competitor name if one stands out. 3-5 sentences.\n` +
     `- competitors: only real business/brand names mentioned as alternatives to ${businessName}; exclude ${businessName}; max 5; each reason <= 10 words and drawn from the responses (ratings, review counts, specialties the AI cited).\n` +
     `- recommendations: 3-5 concrete, prioritised actions grounded in the missing queries above and what competitors are praised for. No generic filler.\n` +
     `- steps: for EACH recommendation, give 2-4 specific, practical how-to steps the owner can actually do. Tailor them to the business type you infer from the responses — e.g. a software/SaaS company should get steps about review sites like G2/Capterra, comparison/"vs alternatives" pages, and content; a local service business should get steps about Google Business Profile, local directories/citations, and asking customers for reviews. Steps must be real actions (improve reviews, web presence, listings, on-page content) — never promise that an action guarantees a ranking change.\n\n` +
@@ -629,17 +630,26 @@ async function extractInsightsLLM(allTexts, businessName, queryGaps, overallScor
 // grounded entirely in the real score, trend, mention counts and competitors.
 function buildFallbackSummary(businessName, score, prevScore, mentions, queries, competitors, recommendations) {
   const delta = (prevScore != null) ? (score - prevScore) : 0;
-  const trend = delta > 0 ? `up ${delta} point${delta === 1 ? '' : 's'} from last week`
+  const trend = prevScore == null ? 'this is your first scan'
+              : delta > 0 ? `up ${delta} point${delta === 1 ? '' : 's'} from last week`
               : delta < 0 ? `down ${Math.abs(delta)} point${Math.abs(delta) === 1 ? '' : 's'} from last week`
-              : 'about level with last week';
-  let s = `This week AI assistants mentioned ${businessName} in ${mentions} of ${queries} test questions — a ${score}% visibility score, ${trend}.`;
+              : 'level with last week';
+  let s = `Across ${queries} test question${queries === 1 ? '' : 's'} we ran on ChatGPT, Gemini and Claude, ${businessName} was named in ${mentions} — a ${score}% visibility score, ${trend}.`;
+  if (score === 0) {
+    s += ` Right now the AI assistants aren't surfacing you for these searches, so when potential customers ask them to recommend a business like yours, they're hearing about competitors instead.`;
+  } else if (score < 40) {
+    s += ` You're showing up some of the time, but competitors are still recommended more often than you are.`;
+  } else if (score < 70) {
+    s += ` You're a solid presence in AI answers — the goal now is to be the top pick more consistently.`;
+  } else {
+    s += ` You're one of the businesses these assistants reliably recommend, which is a strong position to defend.`;
+  }
   const top = (competitors || [])[0];
   if (top && top.competitor) {
-    const reason = (top.reasons && top.reasons[0]) ? ` (${String(top.reasons[0]).toLowerCase()})` : '';
-    s += ` ${top.competitor} came up most often as an alternative${reason}.`;
+    const reason = (top.reasons && top.reasons[0]) ? `, largely for ${String(top.reasons[0]).toLowerCase()}` : '';
+    const others = (competitors.length > 1) ? ` — one of ${competitors.length} alternatives the AI named` : '';
+    s += ` ${top.competitor} came up most often as an alternative${reason}${others}.`;
   }
-  const rec = (recommendations || [])[0];
-  if (rec && rec.action) s += ` Biggest opportunity right now: ${String(rec.action).replace(/\.\s*$/, '')}.`;
   return s;
 }
 
@@ -841,7 +851,7 @@ async function runRealScan({ businessName, businessType, city, state, customQuer
     .slice(0, 8);
 
   // ── Insights (features 1 + 4) — one grounded LLM call; heuristic fallback ────
-  const insights = await extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers);
+  const insights = await extractInsightsLLM(allTexts, businessName, queryGaps, overallScore, providers, prevScore);
 
   let competitors;
   let recommendations;
