@@ -494,7 +494,7 @@ async function fetchBingListing(location, platform) {
     if (!platform.platform_id) return null;
 
     const response = await fetch(
-      `https://bingplacesforpusiness.microsoft.com/api/v1/businesses/${platform.platform_id}`,
+      `https://bingplacesforbusiness.microsoft.com/api/v1/businesses/${platform.platform_id}`,
       { headers: { 'Ocp-Apim-Subscription-Key': apiKey } }
     );
 
@@ -531,8 +531,8 @@ async function pushToBing(location, platform) {
   };
 
   const url = platform.platform_id
-    ? `https://bingplacesforpusiness.microsoft.com/api/v1/businesses/${platform.platform_id}`
-    : `https://bingplacesforpusiness.microsoft.com/api/v1/businesses`;
+    ? `https://bingplacesforbusiness.microsoft.com/api/v1/businesses/${platform.platform_id}`
+    : `https://bingplacesforbusiness.microsoft.com/api/v1/businesses`;
 
   const response = await fetch(url, {
     method: platform.platform_id ? 'PUT' : 'POST',
