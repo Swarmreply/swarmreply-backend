@@ -261,7 +261,7 @@ async function startServer() {
       '. Set them in Railway Variables before starting. Refusing to boot.');
     process.exit(1);
   }
-  if (process.env.ENCRYPTION_KEY.length !== 64) {
+  if (process.env.ENCRYPTION_KEY.trim().replace(/^["']|["']$/g, '').length !== 64) {
     logger.error('ENCRYPTION_KEY must be 64 hex characters (openssl rand -hex 32). Refusing to boot.');
     process.exit(1);
   }
