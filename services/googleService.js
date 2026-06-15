@@ -388,10 +388,82 @@ function starRatingToNumber(starRating) {
   return map[starRating] || 0;
 }
 
+/**
+ * captureLocationDetails()
+ * After a Google Business Profile is connected, read the location's address
+ * and coordinates and cache them on our location row. This is what makes the
+ * Competitors nearby-benchmark work automatically (no customer input).
+ *
+ * Best-effort: any failure is logged and swallowed so it never breaks the
+ * connection flow. Only geo fields are written — review/post plumbing is left
+ * untouched.
+ *
+ * @param {string} locationId - Our internal location ID
+ */
+async function captureLocationDetails(locationId) {
+  try {
+    const client = await getValidClient(locationId);
+
+    const locRow = await query('SELECT business_name FROM locations WHERE id = $1', [locationId]).catch(() => ({ rows: [] }));
+    const ourName = (locRow.rows[0]?.business_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    // 1) The connected user's Business Profile accounts.
+    const acctRes = await client.request({
+      url: 'https://mybusinessaccountmanagement.googleapis.com/v1/accounts',
+      params: { pageSize: 20 },
+    });
+    const accounts = acctRes.data.accounts || [];
+    if (!accounts.length) { logger.info(`GBP capture: no accounts for ${locationId}`); return null; }
+
+    // 2) Find the matching location across accounts (prefer a name match).
+    let chosen = null;
+    for (const acct of accounts) {
+      const locRes = await client.request({
+        url: `https://mybusinessbusinessinformation.googleapis.com/v1/${acct.name}/locations`,
+        params: { readMask: 'name,title,storefrontAddress,latlng,metadata', pageSize: 100 },
+      }).catch(() => ({ data: {} }));
+      const locs = locRes.data.locations || [];
+      if (!locs.length) continue;
+      const match = ourName ? locs.find(l => (l.title || '').toLowerCase().replace(/[^a-z0-9]/g, '') === ourName) : null;
+      if (match) { chosen = match; break; }
+      if (!chosen) chosen = locs[0];
+    }
+    if (!chosen) { logger.info(`GBP capture: no locations for ${locationId}`); return null; }
+
+    const addr = chosen.storefrontAddress || {};
+    const ll   = chosen.latlng || {};
+    const meta = chosen.metadata || {};
+    const city    = addr.locality || null;
+    const state   = addr.administrativeArea || null;
+    const lat     = ll.latitude  != null ? ll.latitude  : null;
+    const lng     = ll.longitude != null ? ll.longitude : null;
+    const placeId = meta.placeId || null;
+
+    await query(
+      `UPDATE locations SET
+         city            = COALESCE($1, city),
+         state           = COALESCE($2, state),
+         latitude        = COALESCE($3, latitude),
+         longitude       = COALESCE($4, longitude),
+         google_place_id = COALESCE($5, google_place_id),
+         updated_at      = NOW()
+       WHERE id = $6`,
+      [city, state, lat, lng, placeId, locationId]
+    );
+
+    logger.info(`GBP capture for ${locationId}: city=${city || '–'}, state=${state || '–'}, latlng=${lat != null ? lat + ',' + lng : '–'}, placeId=${placeId ? 'yes' : 'no'}`);
+    return { city, state, lat, lng, placeId };
+  } catch (e) {
+    logger.warn(`GBP location capture failed for ${locationId}: ${e.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   getAuthUrl,
   exchangeCodeForTokens,
   getValidClient,
   fetchNewReviews,
-  postReplyToGoogle
+  postReplyToGoogle,
+  captureLocationDetails
 };
