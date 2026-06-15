@@ -634,14 +634,15 @@ router.patch('/customers/:id/account', requireAdmin, async (req, res) => {
 // (business name/type, contact email, tone, custom instructions, auto-reply, active)
 router.put('/locations/:locId', requireAdmin, async (req, res) => {
   const { locId } = req.params;
-  const { businessName, businessType, contactEmail, tone, customInstructions, autoReply, isActive } = req.body || {};
+  const { businessName, businessType, contactEmail, tone, customInstructions, autoReply, isActive, city, state } = req.body || {};
   if (contactEmail !== undefined && contactEmail && !EMAIL_RE.test(contactEmail)) {
     return res.status(400).json({ error: 'Please enter a valid contact email.' });
   }
   try {
-    const owner = await query('SELECT customer_id FROM locations WHERE id=$1', [locId]);
+    const owner = await query('SELECT customer_id, refresh_token FROM locations WHERE id=$1', [locId]);
     if (!owner.rows.length) return res.status(404).json({ error: 'Location not found' });
     const customerId = owner.rows[0].customer_id;
+    const hasGoogle = !!owner.rows[0].refresh_token;
 
     const sets = [], params = [];
     let i = 1;
@@ -652,6 +653,16 @@ router.put('/locations/:locId', requireAdmin, async (req, res) => {
     if (customInstructions !== undefined) { sets.push(`custom_instructions=$${i++}`); params.push(customInstructions || null); }
     if (autoReply          !== undefined) { sets.push(`auto_reply=$${i++}`);          params.push(!!autoReply); }
     if (isActive           !== undefined) { sets.push(`is_active=$${i++}`);           params.push(!!isActive); }
+    if (city               !== undefined) { sets.push(`city=$${i++}`);                params.push(city || null); }
+    if (state              !== undefined) { sets.push(`state=$${i++}`);               params.push(state || null); }
+
+    // When an admin sets the location manually (no Google connection), clear any
+    // cached coordinates so the next competitor scan re-resolves them from the new
+    // city/state. For Google-connected locations we keep Google's exact coordinates.
+    if ((city !== undefined || state !== undefined) && !hasGoogle) {
+      sets.push('latitude=NULL', 'longitude=NULL', 'google_place_id=NULL');
+    }
+
     if (!sets.length) return res.json({ success: true });
 
     params.push(locId);
