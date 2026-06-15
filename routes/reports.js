@@ -12,6 +12,7 @@ const router  = express.Router();
 const { query } = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
 const logger = require('../utils/logger');
+const competitorService = require('../services/competitorService');
 
 // Whitelist range -> SQL interval. Whitelisting (not interpolating user input)
 // keeps this injection-safe.
@@ -118,6 +119,69 @@ router.get('/analytics', authenticateToken, async (req, res) => {
   } catch (err) {
     logger.error('Reports analytics error:', err.message);
     res.status(500).json({ error: 'Failed to load analytics' });
+  }
+});
+
+// ============================================
+// COMPETITORS — Get Found › AI Competitors (nearby benchmark)
+// Google Places nearby benchmark: your rating + review count vs the nearest
+// businesses in your category. First scan is user-initiated ("Try scanning
+// now"); after that scheduler.competitors re-scans weekly. We only read here.
+// ============================================
+
+// In-flight scans, so a manual refresh doesn't overlap with itself.
+const scanningLocations = new Set();
+
+async function primaryLocationId(customerId) {
+  const r = await query(
+    'SELECT id FROM locations WHERE customer_id=$1 ORDER BY created_at ASC LIMIT 1',
+    [customerId]
+  ).catch(() => ({ rows: [] }));
+  return r.rows[0] ? r.rows[0].id : null;
+}
+
+// GET /api/reports/competitors — read the latest nearby benchmark (no scan).
+router.get('/competitors', authenticateToken, async (req, res) => {
+  const customerId = req.user.customerId || req.user.id;
+  try {
+    const locationId = await primaryLocationId(customerId);
+    const configured = !!process.env.GOOGLE_PLACES_API_KEY;
+    if (!locationId) {
+      return res.json({ benchmark: { hasData: false, reason: 'no_location' }, configured });
+    }
+    const benchmark = await competitorService.getCompetitorBenchmark(locationId)
+      .catch(() => ({ hasData: false }));
+    res.json({ benchmark, configured });
+  } catch (err) {
+    logger.error('Reports competitors error:', err.message);
+    res.status(500).json({ error: 'Failed to load competitors' });
+  }
+});
+
+// POST /api/reports/competitors/refresh — "Try scanning now". Runs the first
+// scan and, by creating snapshots, opts this location into the weekly refresh.
+router.post('/competitors/refresh', authenticateToken, async (req, res) => {
+  const customerId = req.user.customerId || req.user.id;
+  try {
+    const locationId = await primaryLocationId(customerId);
+    if (!locationId) return res.status(400).json({ error: 'No location to scan' });
+    if (!process.env.GOOGLE_PLACES_API_KEY) {
+      return res.status(503).json({ error: 'Competitor scanning is not configured yet.' });
+    }
+    if (scanningLocations.has(locationId)) {
+      return res.status(409).json({ error: 'A scan is already running — give it a moment.' });
+    }
+    scanningLocations.add(locationId);
+    try {
+      await competitorService.findCompetitors(locationId);
+      const benchmark = await competitorService.getCompetitorBenchmark(locationId);
+      res.json({ benchmark });
+    } finally {
+      scanningLocations.delete(locationId);
+    }
+  } catch (err) {
+    logger.error('Competitor refresh error:', err.message);
+    res.status(500).json({ error: err.message || 'Refresh failed' });
   }
 });
 
