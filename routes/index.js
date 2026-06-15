@@ -69,6 +69,9 @@ router.get('/auth/google/callback', async (req, res) => {
 
   try {
     await googleService.exchangeCodeForTokens(code, locationId);
+    // Best-effort: pull the Business Profile's address + coordinates so the
+    // Competitors nearby-benchmark works automatically. Never blocks the connect.
+    googleService.captureLocationDetails(locationId).catch(() => {});
     logger.info(`Google OAuth complete for location: ${locationId}`);
     res.redirect(`${process.env.FRONTEND_URL}/dashboard?success=google_connected`);
   } catch (error) {
