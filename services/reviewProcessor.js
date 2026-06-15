@@ -44,7 +44,7 @@ async function processAllActiveLocations() {
        WHERE l.is_active = true
        AND l.platform = 'google'
        AND l.refresh_token IS NOT NULL
-       AND c.status = 'active'
+       AND c.status IN ('active', 'cancelling')
        AND COALESCE(l.auto_reply, true) = true`,
       []
     );
@@ -362,7 +362,7 @@ async function sendWeeklyDigests() {
        JOIN locations l ON c.id = l.customer_id
        JOIN reviews rv ON l.id = rv.location_id
        LEFT JOIN replies rp ON rv.id = rp.review_id AND rp.status = 'posted'
-       WHERE c.status = 'active'
+       WHERE c.status IN ('active', 'cancelling')
        AND rv.created_at >= NOW() - INTERVAL '7 days'
        GROUP BY c.id, c.email, c.name
        HAVING COUNT(rp.id) > 0`,
