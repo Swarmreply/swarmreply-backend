@@ -12,6 +12,7 @@ const { processDueScheduledRequests } = require('./services/integrationService')
 const { runDailySync } = require('./services/listingsService');
 const { runWeeklyDirectoryScan } = require('./services/directoryCheckService');
 const { runDueCompetitorScans } = require('./scheduler.competitors');
+const { runDueRankChecks } = require('./scheduler.rank');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -136,6 +137,22 @@ function startScheduler() {
     } catch (error) {
       logger.error('Scheduler: AI Visibility re-scan job failed:', error.message);
       captureError(error, { job: 'ai-visibility-rescan' });
+    }
+  });
+
+  // ============================================
+  // JOB 4b: Rank Tracking weekly re-checks
+  // Runs every Monday at 9am; re-checks locations that have
+  // opted in (run at least one check) and are now 7+ days
+  // stale. First checks stay on-demand via the button.
+  // ============================================
+  cron.schedule('0 9 * * 1', async () => {
+    logger.info('Scheduler: Running due rank checks');
+    try {
+      await runDueRankChecks();
+    } catch (error) {
+      logger.error('Scheduler: Rank check job failed:', error.message);
+      captureError(error, { job: 'rank-weekly-check' });
     }
   });
 
