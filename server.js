@@ -252,6 +252,25 @@ app.use((err, req, res, next) => {
 // ============================================
 
 async function startServer() {
+  // Fail fast on missing fundamental secrets rather than failing silently later
+  // (e.g. JWT_SECRET unset → every auth request 401s with no obvious cause).
+  const required = ['JWT_SECRET', 'ENCRYPTION_KEY', 'DATABASE_URL'];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    logger.error('Missing required environment variable(s): ' + missing.join(', ') +
+      '. Set them in Railway Variables before starting. Refusing to boot.');
+    process.exit(1);
+  }
+  if (process.env.ENCRYPTION_KEY.length !== 64) {
+    logger.error('ENCRYPTION_KEY must be 64 hex characters (openssl rand -hex 32). Refusing to boot.');
+    process.exit(1);
+  }
+  // Important-but-not-fatal in production: warn loudly so misconfig is visible.
+  if (isProd) {
+    const prodWarn = ['STRIPE_WEBHOOK_SECRET', 'ADMIN_EMAIL', 'ADMIN_PASSWORD'].filter((k) => !process.env[k]);
+    if (prodWarn.length) logger.warn('Production is missing recommended env var(s): ' + prodWarn.join(', '));
+  }
+
   // Test database connection before starting
   const dbConnected = await testConnection();
 
