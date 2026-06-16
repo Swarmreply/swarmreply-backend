@@ -920,12 +920,16 @@ const stripeWebhookHandler = async (req, res) => {
         const customerId = subscription.metadata?.customerId;
         const plan = getPlanFromPriceId(subscription.items.data[0]?.price?.id);
         // Map Stripe's subscription status to our account status, so a failed
-        // renewal locks the account and a recovery unlocks it.
+        // renewal locks the account and a recovery unlocks it. Voluntary pause
+        // (pause_collection) and scheduled cancellation (cancel_at_period_end)
+        // are also reflected so this webhook never overwrites those states.
         const subStatus = subscription.status;
         let acctStatus = 'active';
-        if (subStatus === 'past_due') acctStatus = 'past_due';
+        if (subscription.pause_collection) acctStatus = 'paused';
+        else if (subStatus === 'past_due') acctStatus = 'past_due';
         else if (subStatus === 'unpaid') acctStatus = 'locked';
         else if (subStatus === 'canceled') acctStatus = 'cancelled';
+        else if (subscription.cancel_at_period_end) acctStatus = 'cancelling';
 
         if (customerId) {
           await query(
