@@ -1170,6 +1170,96 @@ router.post('/customers/login', async (req, res) => {
   }
 });
 
+// POST /api/customers/register
+// Creates the account on signup step 1, BEFORE payment, with the customer's own
+// password at status 'pending'. Returns a token so the same session can continue
+// straight to plan + payment. The pending account is activated when the first
+// payment succeeds (handled in the subscription/payment webhooks).
+router.post('/customers/register', async (req, res) => {
+  try {
+    const jwt = require('jsonwebtoken');
+    const { v4: uuidv4 } = require('uuid');
+    const bcrypt = require('bcryptjs');
+    const { name, email, password, marketingOptIn, agreedToTerms } = req.body || {};
+
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanName  = (name || '').trim();
+    if (!cleanName) return res.status(400).json({ error: 'Please enter your full name.' });
+    if (!cleanEmail || !/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    }
+    if (!agreedToTerms) {
+      return res.status(400).json({ error: 'Please agree to the Terms of Service and Privacy Policy.' });
+    }
+
+    // Email already tied to a team member of any account -> they should log in.
+    const tm = await query('SELECT id FROM team_members WHERE LOWER(email) = $1', [cleanEmail]);
+    if (tm.rows.length) {
+      return res.status(409).json({ error: 'An account with this email already exists. Please log in.', code: 'account_exists' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Existing customer row? Active = log in. Pending = resume (refresh name/password).
+    const existing = await query('SELECT id, status FROM customers WHERE LOWER(email) = $1', [cleanEmail]);
+    let customerId;
+    if (existing.rows.length) {
+      const row = existing.rows[0];
+      if (row.status && row.status !== 'pending') {
+        return res.status(409).json({ error: 'An account with this email already exists. Please log in.', code: 'account_exists' });
+      }
+      customerId = row.id;
+      await query(
+        'UPDATE customers SET name = $1, password_hash = $2, updated_at = NOW() WHERE id = $3',
+        [cleanName, passwordHash, customerId]
+      );
+    } else {
+      const created = await query(
+        `INSERT INTO customers (email, name, password_hash, status, plan, welcome_email_sent)
+         VALUES ($1, $2, $3, 'pending', 'starter', false)
+         RETURNING id`,
+        [cleanEmail, cleanName, passwordHash]
+      );
+      customerId = created.rows[0].id;
+    }
+
+    // Mark the captured lead converted and keep their marketing preference.
+    await query(
+      `INSERT INTO leads (email, name, marketing_opt_in, source, converted)
+       VALUES ($1, $2, $3, 'signup', true)
+       ON CONFLICT (email) DO UPDATE
+         SET name = COALESCE(NULLIF(EXCLUDED.name, ''), leads.name),
+             marketing_opt_in = EXCLUDED.marketing_opt_in OR leads.marketing_opt_in,
+             converted = true,
+             updated_at = now()`,
+      [cleanEmail, cleanName, !!marketingOptIn]
+    ).catch((e) => logger.error('register: lead upsert skipped: ' + e.message));
+
+    const accessToken = jwt.sign(
+      { jti: uuidv4(), memberId: customerId, customerId,
+        email: cleanEmail, name: cleanName, role: 'owner',
+        plan: 'starter', is_demo: false },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    logger.info(`Signup register: ${cleanEmail} (pending) -> ${customerId}`);
+    return res.json({
+      success: true,
+      accessToken,
+      status: 'pending',
+      needsPayment: true,
+      member: { id: customerId, name: cleanName, email: cleanEmail, role: 'owner', customerId, plan: 'starter' },
+    });
+  } catch (err) {
+    logger.error('register error: ' + err.message);
+    return res.status(500).json({ error: 'Could not create your account. Please try again.' });
+  }
+});
+
 // POST /api/customers/logout
 router.post('/customers/logout', async (req, res) => {
   const token = req.headers['authorization']?.split(' ')[1];
