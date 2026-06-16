@@ -930,6 +930,10 @@ const stripeWebhookHandler = async (req, res) => {
         else if (subStatus === 'unpaid') acctStatus = 'locked';
         else if (subStatus === 'canceled') acctStatus = 'cancelled';
         else if (subscription.cancel_at_period_end) acctStatus = 'cancelling';
+        // Embedded-signup subscriptions start 'incomplete' (default_incomplete) and
+        // must NOT activate the account until the first payment clears. Hold them
+        // 'pending' until Stripe reports the subscription active.
+        else if (subStatus === 'incomplete' || subStatus === 'incomplete_expired') acctStatus = 'pending';
 
         if (customerId) {
           await query(
@@ -2820,6 +2824,92 @@ router.post('/checkout/session', async (req, res) => {
   } catch (err) {
     logger.error('checkout/session error: ' + err.message);
     return res.status(500).json({ error: 'Could not start checkout' });
+  }
+});
+
+// POST /api/checkout/subscription
+// Embedded signup payment. Creates the Stripe subscription for a *pending*
+// account (registered at step 1) with payment_behavior:'default_incomplete' and
+// returns the PaymentIntent client_secret so the card is confirmed inline with
+// Stripe Elements — no redirect off-site. The account is activated by the
+// customer.subscription.updated webhook once the first charge clears.
+router.post('/checkout/subscription', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { locations, billing } = req.body || {};
+    const n = parseInt(locations, 10) || 1;
+    if (n < 1)  return res.status(400).json({ error: 'At least one location is required.' });
+    if (n > 99) return res.status(400).json({ error: 'Contact sales for 100+ locations.' });
+
+    const annual = billing === 'annual';
+    const basePrice     = annual ? process.env.STRIPE_PRICE_BASE_ANNUAL     : process.env.STRIPE_PRICE_BASE_MONTHLY;
+    const locationPrice = annual ? process.env.STRIPE_PRICE_LOCATION_ANNUAL : process.env.STRIPE_PRICE_LOCATION_MONTHLY;
+    if (!basePrice) {
+      logger.error('checkout/subscription: base price env var not set');
+      return res.status(500).json({ error: 'Billing is not configured yet.' });
+    }
+
+    const cr = await query(
+      'SELECT id, email, name, status, stripe_customer_id, stripe_subscription_id FROM customers WHERE id = $1',
+      [customerId]
+    );
+    const cust = cr.rows[0];
+    if (!cust) return res.status(404).json({ error: 'Account not found.' });
+    if (cust.status && cust.status !== 'pending') {
+      return res.status(409).json({ error: 'This account already has an active subscription.', code: 'already_subscribed' });
+    }
+
+    // Create or reuse the Stripe customer (tagged so webhooks can find the account).
+    let stripeCustomerId = cust.stripe_customer_id;
+    if (!stripeCustomerId) {
+      const sc = await stripe.customers.create({
+        email: cust.email,
+        name:  cust.name || undefined,
+        metadata: { customerId: String(customerId) },
+      });
+      stripeCustomerId = sc.id;
+      await query('UPDATE customers SET stripe_customer_id = $1, updated_at = NOW() WHERE id = $2', [stripeCustomerId, customerId]);
+    }
+
+    // If a prior attempt left an incomplete subscription, cancel it so the new
+    // selection gets a fresh PaymentIntent (prevents duplicate/stale subscriptions).
+    if (cust.stripe_subscription_id) {
+      try {
+        const prev = await stripe.subscriptions.retrieve(cust.stripe_subscription_id);
+        if (['incomplete', 'incomplete_expired'].includes(prev.status)) {
+          await stripe.subscriptions.cancel(prev.id).catch(() => {});
+        }
+      } catch (e) { /* prior sub missing/already gone — ignore */ }
+    }
+
+    // base (qty 1) + graduated location add-on (qty n-1), same as hosted checkout.
+    const items = [{ price: basePrice, quantity: 1 }];
+    if (n > 1 && locationPrice) items.push({ price: locationPrice, quantity: n - 1 });
+
+    const metadata = { customerId: String(customerId), locations: String(n), billing: annual ? 'annual' : 'monthly' };
+
+    const subscription = await stripe.subscriptions.create({
+      customer: stripeCustomerId,
+      items,
+      payment_behavior: 'default_incomplete',
+      payment_settings: { save_default_payment_method: 'on_subscription' },
+      expand: ['latest_invoice.payment_intent'],
+      metadata,
+    });
+
+    await query('UPDATE customers SET stripe_subscription_id = $1, updated_at = NOW() WHERE id = $2', [subscription.id, customerId]);
+
+    const clientSecret = subscription.latest_invoice?.payment_intent?.client_secret;
+    if (!clientSecret) {
+      logger.error('checkout/subscription: no client_secret for sub ' + subscription.id);
+      return res.status(500).json({ error: 'Could not initialize payment. Please try again.' });
+    }
+
+    logger.info(`Embedded subscription created for customer ${customerId}: ${subscription.id} (${n} loc, ${annual ? 'annual' : 'monthly'})`);
+    return res.json({ clientSecret, subscriptionId: subscription.id });
+  } catch (err) {
+    logger.error('checkout/subscription error: ' + err.message);
+    return res.status(500).json({ error: 'Could not start your subscription. Please try again.' });
   }
 });
 
