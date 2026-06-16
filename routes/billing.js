@@ -116,6 +116,7 @@ router.get('/status', authenticateToken, async (req, res) => {
           currentPeriodEnd:    new Date(sub.current_period_end   * 1000),
           cancelAtPeriodEnd:   sub.cancel_at_period_end,
           cancelAt:            sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
+          pausedUntil:         sub.pause_collection?.resumes_at ? new Date(sub.pause_collection.resumes_at * 1000) : null,
           trialEnd:            sub.trial_end ? new Date(sub.trial_end * 1000) : null,
           defaultPaymentMethod: sub.default_payment_method
             ? {
@@ -394,6 +395,70 @@ router.post('/reactivate', authenticateToken, async (req, res) => {
 });
 
 
+// ── POST /api/billing/pause ───────────────────────────────────────────────────
+// Voluntary pause — a softer alternative to cancelling. Stripe stops collecting
+// (pause_collection: void) so the customer isn't charged, service pauses (status
+// 'paused' drops out of the scheduler gate), and it auto-resumes after 3 months.
+// The customer can also resume sooner via /resume. Leaves payment_failed_at NULL
+// so this never looks like a payment problem.
+router.post('/pause', authenticateToken, async (req, res) => {
+  try {
+    const customer = await getCustomerRecord(req.user.customerId);
+    if (!customer?.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No active subscription found' });
+    }
+
+    const resumesAt = Math.floor(Date.now() / 1000) + (90 * 24 * 60 * 60); // ~3 months
+
+    await stripe.subscriptions.update(customer.stripe_subscription_id, {
+      pause_collection: { behavior: 'void', resumes_at: resumesAt }
+    });
+
+    await query(
+      `UPDATE customers SET status = 'paused', updated_at = NOW() WHERE id = $1`,
+      [customer.id]
+    );
+
+    const until = new Date(resumesAt * 1000);
+    logger.info(`Subscription paused: ${customer.email} — resumes ${until.toISOString()}`);
+    res.json({
+      success:   true,
+      message:   `Your account is paused until ${until.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}. You can resume anytime.`,
+      resumesAt: until
+    });
+  } catch (err) {
+    logger.error('Pause error:', err.message);
+    res.status(500).json({ error: 'Failed to pause subscription' });
+  }
+});
+
+// ── POST /api/billing/resume ──────────────────────────────────────────────────
+// End a voluntary pause and restore billing + service immediately.
+router.post('/resume', authenticateToken, async (req, res) => {
+  try {
+    const customer = await getCustomerRecord(req.user.customerId);
+    if (!customer?.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No subscription found' });
+    }
+
+    await stripe.subscriptions.update(customer.stripe_subscription_id, {
+      pause_collection: null
+    });
+
+    await query(
+      `UPDATE customers SET status = 'active', updated_at = NOW() WHERE id = $1`,
+      [customer.id]
+    );
+
+    logger.info(`Subscription resumed: ${customer.email}`);
+    res.json({ success: true, message: 'Welcome back! Your subscription is active again. 🐝' });
+  } catch (err) {
+    logger.error('Resume error:', err.message);
+    res.status(500).json({ error: 'Failed to resume subscription' });
+  }
+});
+
+
 // ── POST /api/billing/sync-locations ──────────────────────────────────────────
 // Reconcile the Stripe per-location add-on quantity with the customer's actual
 // active-location count. Safe to call anytime; used by the billing dashboard and
@@ -466,8 +531,8 @@ router.get('/health', authenticateToken, async (req, res) => {
       graceDaysLeft = Math.max(0, Math.ceil((graceExpiry - now) / (1000 * 60 * 60 * 24)));
     }
 
-    // ── Lockout: paused + grace period expired ────────────────────────────────
-    const locked = isPaused && graceExpired;
+    // ── Lockout: payment actually failed + grace period expired ───────────────
+    const locked = hasFailed && graceExpired;
 
     // ── Banner level ──────────────────────────────────────────────────────────
     // null     = no banner (all good)
@@ -475,7 +540,7 @@ router.get('/health', authenticateToken, async (req, res) => {
     // 'locked' = grace expired — show lockout screen
     let bannerLevel = null;
     if (locked)         bannerLevel = 'locked';
-    else if (isPaused)  bannerLevel = 'warn';
+    else if (hasFailed) bannerLevel = 'warn';
 
     res.json({
       success: true,
