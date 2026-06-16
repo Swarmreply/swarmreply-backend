@@ -2656,6 +2656,33 @@ router.post('/campaigns', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/leads
+// Captures a signup lead (name + email) the instant they're entered, so a
+// prospect is saved even if they never finish signup. Upserts by email.
+// Fire-and-forget from the client; never blocks or breaks the signup UI.
+router.post('/leads', async (req, res) => {
+  try {
+    const { name, email, marketingOptIn, source } = req.body || {};
+    const clean = (email || '').trim().toLowerCase();
+    if (!clean || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(clean)) {
+      return res.status(400).json({ error: 'Valid email required' });
+    }
+    await query(
+      `INSERT INTO leads (email, name, marketing_opt_in, source)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (email) DO UPDATE
+         SET name = COALESCE(NULLIF(EXCLUDED.name, ''), leads.name),
+             marketing_opt_in = EXCLUDED.marketing_opt_in OR leads.marketing_opt_in,
+             updated_at = now()`,
+      [clean, (name || '').trim(), !!marketingOptIn, (source || 'signup').slice(0, 60)]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    logger.error('leads capture error: ' + err.message);
+    return res.json({ ok: true }); // never surface lead-capture failures to the UI
+  }
+});
+
 // POST /api/checkout/session
 // Creates a Stripe Checkout Session for signup. Carries all signup fields as
 // metadata so the webhook (checkout.session.completed) can provision the full
