@@ -984,41 +984,390 @@ router.post('/customers/:id/impersonate', requireAdmin, async (req, res) => {
 });
 
 // ── CREATE DEMO ACCOUNT ───────────────────────
+// Demo seeding helpers + industry-specific mock content. A demo account is
+// populated with realistic reviews, replies, contacts, requests, and NPS
+// responses so the platform looks "live" during a sales demo for that
+// customer type. All data is backdated so dashboard windows read naturally.
+const DEMO_FIRST = ['James','Maria','David','Jennifer','Michael','Linda','Robert','Patricia','John','Sarah','William','Jessica','Carlos','Ashley','Daniel','Emily','Matthew','Amanda','Anthony','Stephanie','Mark','Nicole','Steven','Rachel','Andrew','Lauren','Joshua','Megan','Kevin','Hannah','Brian','Olivia','Eric','Grace','Jason','Sofia','Ryan','Victoria','Justin','Chloe'];
+const DEMO_LAST  = ['Smith','Garcia','Johnson','Lee','Brown','Martinez','Davis','Rodriguez','Wilson','Nguyen','Anderson','Taylor','Thomas','Moore','Jackson','White','Harris','Martin','Thompson','Lopez','Hill','Scott','Green','Adams','Baker','Gonzalez','Nelson','Carter','Mitchell','Perez','Roberts','Turner','Phillips','Campbell','Parker','Evans','Collins','Stewart','Morris'];
+
+function demoRand(min, max){ return Math.floor(Math.random() * (max - min + 1)) + min; }
+function demoPick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+function demoWeighted(pairs){
+  const total = pairs.reduce((s, p) => s + p[1], 0);
+  let r = Math.random() * total;
+  for (const [v, w] of pairs){ if ((r -= w) < 0) return v; }
+  return pairs[pairs.length - 1][0];
+}
+function demoDaysAgo(days, jitterHours){
+  return new Date(Date.now() - days * 86400000 - (jitterHours || 0) * 3600000);
+}
+function demoPeople(n){
+  const out = [];
+  for (let i = 0; i < n; i++){
+    const f = demoPick(DEMO_FIRST), l = demoPick(DEMO_LAST);
+    out.push({
+      full:  f + ' ' + l,
+      email: (f + '.' + l + demoRand(1, 99) + '@example.com').toLowerCase(),
+      phone: '(555) ' + demoRand(200, 999) + '-' + demoRand(1000, 9999)
+    });
+  }
+  return out;
+}
+function demoBulk(table, cols, rows){
+  const params = [];
+  const tuples = rows.map(row => {
+    const ph = cols.map(c => { params.push(row[c] === undefined ? null : row[c]); return '$' + params.length; });
+    return '(' + ph.join(',') + ')';
+  });
+  return { text: 'INSERT INTO ' + table + ' (' + cols.join(',') + ') VALUES ' + tuples.join(','), params };
+}
+
+const DEMO_INDUSTRY = {
+  'Restaurant':    { code: 'restaurant', healthcare: false },
+  'Dental':        { code: 'dental',     healthcare: true  },
+  'Gym / Fitness': { code: 'fitness',    healthcare: false },
+  'Salon / Spa':   { code: 'salon',      healthcare: false },
+  'Auto Shop':     { code: 'automotive', healthcare: false },
+  'Medical':       { code: 'medical',    healthcare: true  },
+  'Other':         { code: 'other',      healthcare: false }
+};
+
+const DEMO_REVIEWS = {
+  'Restaurant': {
+    pos: [
+      "Absolutely incredible meal. The pasta was cooked perfectly and our server was so attentive all night.",
+      "Best brunch in town! The avocado toast and fresh juice were amazing, and the patio is gorgeous.",
+      "We come here every Friday. Consistently great food, friendly staff, and a welcoming atmosphere.",
+      "They sent out a complimentary appetizer for our anniversary, such a thoughtful touch. Food was outstanding.",
+      "Hands down the best burger I have had. Juicy, flavorful, and the fries are addictive.",
+      "Great date-night spot. Cozy lighting, excellent wine list, and the dessert was the perfect ending.",
+      "Service was quick even though they were packed. Everything came out hot and delicious.",
+      "The seasonal menu never disappoints. Fresh ingredients and creative dishes every single time.",
+      "Took my parents here and they loved it. Generous portions and the staff made us feel at home."
+    ],
+    neu: [
+      "Food was good but the wait was longer than expected on a weeknight. Might come back when it is quieter.",
+      "Decent meal overall. Some dishes were better than others, the entrees shined more than the starters.",
+      "Nice spot but a little pricey for the portion sizes. The flavor was definitely there though."
+    ],
+    neg: [
+      "Disappointed this visit. Our order came out wrong twice and the table next to us was served first.",
+      "The food was cold by the time it reached us and the server seemed overwhelmed. Hope they staff up.",
+      "Waited 40 minutes for a table we reserved ahead of time. The food did not make up for it."
+    ]
+  },
+  'Dental': {
+    pos: [
+      "The dentist made my root canal completely painless. The whole team is gentle and reassuring.",
+      "Best dental experience I have had. They explained every step and never made me feel rushed.",
+      "The hygienist was thorough and friendly, and the office is spotless. My teeth have never felt cleaner.",
+      "They got me in same-day for a chipped tooth and fixed it perfectly. So grateful for the quick care.",
+      "My kids actually look forward to their cleanings here. The staff is wonderful with nervous patients.",
+      "Transparent about pricing and insurance up front. No surprises, just great care.",
+      "Switched to this practice last year and could not be happier. Modern equipment and a caring team.",
+      "Painless cleaning, and they caught an issue early that saved me a much bigger problem later.",
+      "Gentle, professional, and genuinely kind. They put my anxiety at ease immediately."
+    ],
+    neu: [
+      "Good care but the wait past my appointment time was a bit long. The cleaning itself was great.",
+      "Solid dental office. Staff is friendly, though scheduling took a couple tries for a convenient slot.",
+      "Competent and clean, just wish the billing explanation had been clearer up front."
+    ],
+    neg: [
+      "Waited almost an hour past my appointment and felt rushed once I was seen. Expected better.",
+      "Billing was confusing and I was charged more than the estimate. The dental work itself was fine.",
+      "Hard to get someone on the phone to reschedule, and I had to call back several times."
+    ]
+  },
+  'Gym / Fitness': {
+    pos: [
+      "Love this gym! Equipment is always clean and the trainers genuinely care about your progress.",
+      "The group classes are fantastic, high-energy instructors and a welcoming community.",
+      "Signed up three months ago and I am already seeing results. The personal training is worth every penny.",
+      "Open 24/7, never too crowded, and the staff is friendly every single time I come in.",
+      "Best fitness investment I have made. Great variety of machines and free weights.",
+      "The trainers built me a plan that actually fits my schedule. So motivating.",
+      "Clean locker rooms, modern equipment, and a positive vibe. Highly recommend.",
+      "My favorite part is the community, everyone encourages each other. Made working out fun again.",
+      "The staff helped me feel comfortable as a beginner. No judgment, just support."
+    ],
+    neu: [
+      "Good gym overall but it gets crowded right after work. Early mornings are much better.",
+      "Solid equipment selection, though a couple machines have been out of order for a while.",
+      "Nice facility and friendly staff, just wish they offered more evening classes."
+    ],
+    neg: [
+      "Cancelled my membership because half the treadmills were broken for weeks. Disappointing.",
+      "Way too crowded at peak hours and hard to get on equipment. Front desk was not very helpful.",
+      "Signed up and then struggled to get the onboarding session I was promised."
+    ]
+  },
+  'Salon / Spa': {
+    pos: [
+      "Best haircut I have had in years! My stylist really listened to exactly what I wanted.",
+      "The massage was incredibly relaxing and the spa atmosphere is so peaceful. Already booked my next visit.",
+      "My colorist is a genius, exactly the shade I asked for and it looks so natural.",
+      "Pampered from the moment I walked in. The staff is warm and the facial left my skin glowing.",
+      "Such a relaxing experience. Clean, beautiful space and the most talented team.",
+      "I always leave feeling refreshed and looking my best. Worth every minute.",
+      "They fixed a color disaster from another salon and I could not be happier. True professionals.",
+      "The manicure lasted three weeks without chipping. Best in town, hands down.",
+      "My stylist remembered exactly how I like my cut from last time. That personal touch means a lot."
+    ],
+    neu: [
+      "Nice salon and good results, but my appointment ran behind by about 20 minutes.",
+      "Lovely atmosphere, though it is on the pricier side. The service itself was good.",
+      "Happy with my cut, just wish parking nearby was a little easier."
+    ],
+    neg: [
+      "My color came out nothing like the photo I showed and I had to come back to fix it.",
+      "Waited well past my appointment time and felt rushed. Not the relaxing experience I hoped for.",
+      "Booking online was glitchy and my appointment did not get saved the first time."
+    ]
+  },
+  'Auto Shop': {
+    pos: [
+      "Honest, fast, and fair. They fixed my brakes the same day and did not upsell me on anything.",
+      "Finally a mechanic I trust. They explained the repair clearly and the price was exactly as quoted.",
+      "Got my oil change and tire rotation done quickly. Friendly staff and a clean waiting area.",
+      "They diagnosed a problem two other shops missed. Saved me hundreds. Customer for life.",
+      "Quick turnaround on my transmission work and they kept me updated the whole time.",
+      "Fair pricing and they never make you feel pressured. Highly recommend for any repair.",
+      "My car runs like new. Professional, honest, and reasonably priced.",
+      "They squeezed me in for an emergency repair before a road trip. Lifesavers!",
+      "The only shop I trust with my family cars. Reliable every single time."
+    ],
+    neu: [
+      "Good work but it took a day longer than estimated. The repair itself was solid.",
+      "Fair mechanics, though the waiting room could use an update. Service was fine.",
+      "Decent experience overall, just wish they had called sooner with the estimate."
+    ],
+    neg: [
+      "Charged me more than the original estimate without calling first. Not happy about that.",
+      "Had to bring my car back twice for the same issue. Expected it fixed the first time.",
+      "Took a while to get a callback about my appointment. The work was okay once done."
+    ]
+  },
+  'Medical': {
+    pos: [
+      "The staff was compassionate and the wait time was short. The doctor really listened to my concerns.",
+      "Best medical office I have been to. Caring providers and a smooth check-in process.",
+      "They got me an appointment quickly and followed up afterward to check on me. Truly patient-focused.",
+      "The whole team is kind and professional. I never feel rushed during my visits.",
+      "Clean facility, friendly staff, and a doctor who takes time to explain everything.",
+      "Made a stressful health situation so much easier with their patience and care.",
+      "Online scheduling is easy and the nurses are wonderful. Highly recommend this practice.",
+      "Short wait, attentive staff, and clear communication about my treatment plan.",
+      "The front desk and nurses go above and beyond. A truly caring practice."
+    ],
+    neu: [
+      "Good care but the wait was longer than I would like. The provider was attentive once I was seen.",
+      "Competent and friendly staff, though getting through on the phone can take a while.",
+      "Solid experience overall, just wish the follow-up instructions had been a bit clearer."
+    ],
+    neg: [
+      "Waited over an hour past my appointment and felt rushed once I was finally seen.",
+      "Hard to reach anyone by phone and my results took longer than promised to come through.",
+      "Scheduling was frustrating and I had to call several times to confirm my visit."
+    ]
+  },
+  'Other': {
+    pos: [
+      "Fantastic service from start to finish. The team was professional and exceeded my expectations.",
+      "Could not be happier with the experience. Friendly, knowledgeable, and reliable.",
+      "They went above and beyond to make sure I was taken care of. Highly recommend.",
+      "Great communication and quality work. Will definitely be back.",
+      "Professional, prompt, and a pleasure to work with. Five stars.",
+      "Exceeded my expectations in every way. The staff is courteous and skilled.",
+      "Reliable and trustworthy. They made the whole process easy and stress-free.",
+      "Top-notch service and fair pricing. I recommend them to everyone I know.",
+      "Excellent experience overall. Friendly staff and outstanding results."
+    ],
+    neu: [
+      "Good service overall, though it took a little longer than I expected.",
+      "Solid experience. A few small hiccups but the team handled them well.",
+      "Happy with the outcome, just wish communication had been a bit quicker."
+    ],
+    neg: [
+      "The service did not quite meet my expectations and communication was slow.",
+      "Had a couple issues that took longer than I would like to resolve.",
+      "Getting a response took several attempts. The end result was acceptable."
+    ]
+  }
+};
+
+const DEMO_REPLIES_POS = [
+  "Thank you so much for the kind words, {first}! It means the world to our team. We hope to see you again soon.",
+  "We are thrilled you had such a great experience, {first}! Thanks for taking the time to share it.",
+  "This made our day, {first}! Thank you for the wonderful review and for choosing {biz}.",
+  "So grateful for your support, {first}! Reviews like yours keep our whole team motivated. Thank you!",
+  "Thank you, {first}! We are so happy we could deliver a great experience. Come back and see us soon.",
+  "Wonderful to hear, {first}! We appreciate you and look forward to your next visit."
+];
+const DEMO_REPLIES_REC = [
+  "Thank you for the honest feedback, {first}. We are sorry your experience fell short, and we would love the chance to make it right. Please reach out to us directly.",
+  "We appreciate you letting us know, {first}. This is not the standard we hold ourselves to, and we are taking your comments seriously.",
+  "Thank you for sharing, {first}. We are looking into what happened and would welcome the opportunity to do better next time."
+];
+const DEMO_DETRACTOR_Q1 = ["Long wait time","Service did not meet expectations","Communication could be better","Pricing was unclear","The issue was not fully resolved"];
+const DEMO_DETRACTOR_Q2 = ["Faster service","Clearer communication","More appointment availability","Better follow-up after the visit","More upfront pricing"];
+
 // POST /api/admin/demo
 router.post('/demo', requireAdmin, async (req, res) => {
+  const crypto = require('crypto');
+  const bcrypt = require('bcryptjs');
+  const { randomUUID } = crypto;
   try {
     const { name, industry, location_count } = req.body;
-    const crypto = require('crypto');
-    const bcrypt = require('bcryptjs');
+    const ind     = DEMO_INDUSTRY[industry] || DEMO_INDUSTRY['Other'];
+    const content = DEMO_REVIEWS[industry]  || DEMO_REVIEWS['Other'];
+    const bizName = (name || '').trim() || 'Demo Account';
+    const locs    = Math.min(Math.max(parseInt(location_count) || 1, 1), 25);
 
     const email    = `demo_${Date.now()}@demo.swarmreply.internal`;
     const tempPass = crypto.randomBytes(8).toString('hex');
     const hash     = await bcrypt.hash(tempPass, 12);
 
-    const result = await query(
-      `INSERT INTO customers
-        (email, name, password_hash, plan, status)
-       VALUES ($1,$2,$3,'starter','active') RETURNING id`,
-      [email, name || ' (Demo)', hash]
+    // 1) Customer — flagged as a demo so it is excluded from live counts
+    const cust = await query(
+      `INSERT INTO customers (email, name, password_hash, plan, status, is_demo)
+       VALUES ($1,$2,$3,'starter','active',true) RETURNING id`,
+      [email, bizName, hash]
     );
+    const custId = cust.rows[0].id;
 
-    const custId = result.rows[0].id;
+    // 2) Location(s)
+    const locIds = [];
+    for (let i = 0; i < locs; i++){
+      try {
+        const r = await query(
+          `INSERT INTO locations
+            (customer_id, business_name, business_type, platform, platform_location_id,
+             contact_email, tone, is_healthcare, is_active, billing_synced)
+           VALUES ($1,$2,$3,'google',$4,$5,'warm',$6,true,true) RETURNING id`,
+          [custId, locs > 1 ? `${bizName} — Location ${i+1}` : bizName, ind.code,
+           'demo_loc_' + randomUUID(), email, ind.healthcare]
+        );
+        locIds.push(r.rows[0].id);
+      } catch (e){ logger.error('demo location: ' + e.message); }
+    }
 
-    // Create placeholder location(s)
-    const locs = parseInt(location_count) || 1;
-    for (let i = 0; i < locs; i++) {
-      await query(
-        `INSERT INTO locations (customer_id, business_name, platform, platform_location_id, is_active) VALUES ($1,$2,'google','demo_' || gen_random_uuid()::text,true)`,
-        [custId, `${name} ${locs > 1 ? `Location ${i+1}` : ''}`]
-      ).catch(()=>{});
+    // Nothing more to seed without a location
+    if (locIds.length){
+      const NUM_CONTACTS = Math.min(20 + locs * 6, 60);
+      const NUM_REVIEWS  = Math.min(28 + locs * 8, 70);
+      const NUM_REQUESTS = Math.min(22 + locs * 6, 60);
+      const NUM_SURVEYS  = Math.min(14 + locs * 3, 36);
+      const people = demoPeople(Math.max(NUM_CONTACTS, NUM_REVIEWS, NUM_REQUESTS));
+
+      // 3) Contacts
+      try {
+        const rows = people.slice(0, NUM_CONTACTS).map(p => ({
+          customer_id: custId, name: p.full, email: p.email, phone: p.phone, segment: 'all'
+        }));
+        const q = demoBulk('contacts', ['customer_id','name','email','phone','segment'], rows);
+        await query(q.text + ' ON CONFLICT DO NOTHING', q.params);
+      } catch (e){ logger.error('demo contacts: ' + e.message); }
+
+      // 4) Reviews (backdated, mostly replied) + 5) replies for replied ones
+      let reviews = [];
+      try {
+        const rows = [];
+        for (let i = 0; i < NUM_REVIEWS; i++){
+          const rating = demoWeighted([[5,66],[4,23],[3,7],[2,2],[1,2]]);
+          const bucket = rating >= 4 ? content.pos : rating === 3 ? content.neu : content.neg;
+          const created = demoDaysAgo(Math.random() < 0.45 ? demoRand(0,29) : demoRand(30,89), demoRand(0,23));
+          let status;
+          if (rating <= 2)       status = demoWeighted([['flagged',35],['pending',40],['replied',25]]);
+          else if (rating === 3) status = demoWeighted([['replied',75],['pending',25]]);
+          else                   status = demoWeighted([['replied',82],['pending',18]]);
+          rows.push({
+            location_id: demoPick(locIds),
+            platform: demoWeighted([['google',70],['facebook',22],['yelp',8]]),
+            platform_review_id: 'demo_rev_' + randomUUID(),
+            reviewer_name: demoPick(people).full,
+            star_rating: rating,
+            review_text: demoPick(bucket),
+            review_date: created,
+            created_at: created,
+            status
+          });
+        }
+        const q = demoBulk('reviews',
+          ['location_id','platform','platform_review_id','reviewer_name','star_rating','review_text','review_date','created_at','status'],
+          rows);
+        reviews = (await query(q.text + ' RETURNING id, status, star_rating, reviewer_name, created_at', q.params)).rows;
+      } catch (e){ logger.error('demo reviews: ' + e.message); }
+
+      try {
+        const replyRows = reviews.filter(r => r.status === 'replied').map(r => {
+          const first = (r.reviewer_name || '').split(' ')[0] || 'there';
+          const tpl = (r.star_rating >= 4 ? demoPick(DEMO_REPLIES_POS) : demoPick(DEMO_REPLIES_REC))
+                        .replace(/\{first\}/g, first).replace(/\{biz\}/g, bizName);
+          const posted = new Date(new Date(r.created_at).getTime() + demoRand(2,36) * 3600000);
+          return { review_id: r.id, generated_reply: tpl, posted_reply: tpl, status: 'posted',
+                   posted_at: posted, approved_at: posted, updated_at: posted };
+        });
+        if (replyRows.length){
+          const q = demoBulk('replies',
+            ['review_id','generated_reply','posted_reply','status','posted_at','approved_at','updated_at'],
+            replyRows);
+          await query(q.text, q.params);
+        }
+      } catch (e){ logger.error('demo replies: ' + e.message); }
+
+      // 6) Review requests
+      let requests = [];
+      try {
+        const rows = [];
+        for (let i = 0; i < NUM_REQUESTS; i++){
+          const p = demoPick(people);
+          rows.push({
+            customer_id: custId, location_id: demoPick(locIds),
+            contact_name: p.full, contact_email: p.email, contact_phone: p.phone,
+            trigger_source: demoWeighted([['manual',55],['zapier',45]]),
+            trigger_ref: 'demo_' + randomUUID(),
+            status: demoWeighted([['sent',45],['clicked',30],['completed',25]])
+          });
+        }
+        const q = demoBulk('review_requests',
+          ['customer_id','location_id','contact_name','contact_email','contact_phone','trigger_source','trigger_ref','status'],
+          rows);
+        requests = (await query(q.text + ' RETURNING id', q.params)).rows;
+      } catch (e){ logger.error('demo requests: ' + e.message); }
+
+      // 7) NPS survey responses
+      try {
+        const rows = [];
+        for (let i = 0; i < NUM_SURVEYS; i++){
+          const score = demoWeighted([[10,42],[9,26],[8,14],[7,8],[6,4],[5,2],[4,2],[3,1],[2,1],[1,0],[0,0]]);
+          const path  = score >= 9 ? 'Promoter' : score >= 7 ? 'Passive' : 'Detractor';
+          rows.push({
+            review_request_id: requests.length ? demoPick(requests).id : null,
+            customer_id: custId, location_id: demoPick(locIds),
+            nps_score: score, path,
+            would_return: score >= 7 ? true : Math.random() < 0.3,
+            left_review: path === 'Promoter' ? Math.random() < 0.6 : false,
+            review_platform: 'google',
+            detractor_q1: path === 'Detractor' ? demoPick(DEMO_DETRACTOR_Q1) : null,
+            detractor_q2: path === 'Detractor' ? demoPick(DEMO_DETRACTOR_Q2) : null,
+            completed_at: demoDaysAgo(demoRand(0,89), demoRand(0,23))
+          });
+        }
+        const q = demoBulk('survey_responses',
+          ['review_request_id','customer_id','location_id','nps_score','path','would_return','left_review','review_platform','detractor_q1','detractor_q2','completed_at'],
+          rows);
+        await query(q.text, q.params);
+      } catch (e){ logger.error('demo surveys: ' + e.message); }
     }
 
     await query(
       'INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
-      [custId, 'admin_created_demo', JSON.stringify({ admin: req.admin.email, industry })]
+      [custId, 'admin_created_demo', JSON.stringify({ admin: req.admin.email, industry, locations: locs })]
     ).catch(()=>{});
 
-    logger.info(`Admin created demo: ${name}`);
+    logger.info(`Admin created demo: ${bizName} (${industry}, ${locs} loc)`);
     res.json({ success: true, id: custId, email, tempPassword: tempPass });
   } catch (err) {
     logger.error('Create demo error:', err.message);
