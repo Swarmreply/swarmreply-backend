@@ -360,7 +360,7 @@ router.get('/reviews', authenticateToken, async (req, res) => {
   try {
     // Build query dynamically based on filters
     let sql = `
-      SELECT rv.*, rp.generated_reply, rp.posted_reply, rp.status as reply_status, rp.posted_at
+      SELECT rv.*, rp.id AS reply_id, rp.generated_reply, rp.posted_reply, rp.status as reply_status, rp.posted_at
       FROM reviews rv
       LEFT JOIN replies rp ON rv.id = rp.review_id
       WHERE rv.location_id = $1
