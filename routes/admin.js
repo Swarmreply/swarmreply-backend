@@ -1277,7 +1277,13 @@ router.post('/demo', requireAdmin, async (req, res) => {
         for (let i = 0; i < NUM_REVIEWS; i++){
           const rating = demoWeighted([[5,66],[4,23],[3,7],[2,2],[1,2]]);
           const bucket = rating >= 4 ? content.pos : rating === 3 ? content.neu : content.neg;
-          const created = demoDaysAgo(Math.random() < 0.45 ? demoRand(0,29) : demoRand(30,89), demoRand(0,23));
+          // ~45% land in the last 30 days; the rest spread back across ~12
+          // months with a recency bias, so the 12-month trend/velocity charts
+          // show a full, naturally front-loaded curve.
+          const created = demoDaysAgo(
+            Math.random() < 0.45 ? demoRand(0,29) : 30 + Math.floor(Math.pow(Math.random(), 1.8) * 330),
+            demoRand(0,23)
+          );
           let status;
           if (rating <= 2)       status = demoWeighted([['flagged',35],['pending',40],['replied',25]]);
           else if (rating === 3) status = demoWeighted([['replied',75],['pending',25]]);
@@ -1317,6 +1323,42 @@ router.post('/demo', requireAdmin, async (req, res) => {
         }
       } catch (e){ logger.error('demo replies: ' + e.message); }
 
+      // 5b) A few reviews with a drafted reply awaiting approval — so the
+      // "Pending Approval" state is visible on the Reviews page in demos.
+      try {
+        const NUM_DRAFTS = Math.min(3 + locs, 6);
+        const rows = [];
+        for (let i = 0; i < NUM_DRAFTS; i++){
+          const rating = demoWeighted([[5,60],[4,30],[3,10]]);
+          const created = demoDaysAgo(demoRand(0, 6), demoRand(0, 23));
+          rows.push({
+            location_id: demoPick(locIds),
+            platform: 'google',
+            platform_review_id: 'demo_rev_' + randomUUID(),
+            reviewer_name: demoPick(people).full,
+            star_rating: rating,
+            review_text: demoPick(rating >= 4 ? content.pos : content.neu),
+            review_date: created,
+            created_at: created,
+            status: 'pending'
+          });
+        }
+        const rq = demoBulk('reviews',
+          ['location_id','platform','platform_review_id','reviewer_name','star_rating','review_text','review_date','created_at','status'],
+          rows);
+        const drafts = (await query(rq.text + ' RETURNING id, reviewer_name', rq.params)).rows;
+
+        const draftReplies = drafts.map(d => {
+          const first = (d.reviewer_name || '').split(' ')[0] || 'there';
+          const tpl = demoPick(DEMO_REPLIES_POS).replace(/\{first\}/g, first).replace(/\{biz\}/g, bizName);
+          return { review_id: d.id, generated_reply: tpl, status: 'pending_approval' };
+        });
+        if (draftReplies.length){
+          const q = demoBulk('replies', ['review_id','generated_reply','status'], draftReplies);
+          await query(q.text, q.params);
+        }
+      } catch (e){ logger.error('demo draft replies: ' + e.message); }
+
       // 6) Review requests
       let requests = [];
       try {
@@ -1326,7 +1368,7 @@ router.post('/demo', requireAdmin, async (req, res) => {
           rows.push({
             customer_id: custId, location_id: demoPick(locIds),
             contact_name: p.full, contact_email: p.email, contact_phone: p.phone,
-            trigger_source: demoWeighted([['manual',55],['zapier',45]]),
+            trigger_source: demoWeighted([['email',38],['sms',22],['manual',25],['zapier',15]]),
             trigger_ref: 'demo_' + randomUUID(),
             status: demoWeighted([['sent',45],['clicked',30],['completed',25]])
           });
