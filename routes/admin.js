@@ -1404,6 +1404,69 @@ router.post('/demo', requireAdmin, async (req, res) => {
       } catch (e){ logger.error('demo surveys: ' + e.message); }
     }
 
+    // 6) Competitor snapshots — so Get Found shows a live nearby benchmark.
+    try {
+      const COMP = ['Summit & Co.','Maple Street Collective','Riverside Group','Oakwood Partners','Premier Local','Hometown Provider','Cornerstone Co.','Evergreen Services','First Choice Co.','The Local Standard'];
+      for (const lid of locIds) {
+        const picks = [...COMP].sort(() => Math.random() - 0.5).slice(0, demoRand(3, 5));
+        for (const name of picks) {
+          await query(
+            `INSERT INTO competitor_snapshots
+               (location_id, competitor_place_id, competitor_name, rating, review_count, address, snapshot_date)
+             VALUES ($1,$2,$3,$4,$5,$6,CURRENT_DATE)
+             ON CONFLICT (location_id, competitor_place_id, snapshot_date) DO NOTHING`,
+            [lid, 'demo_comp_' + randomUUID(), name, demoRand(36, 49) / 10, demoRand(45, 620), 'Nearby']
+          );
+        }
+      }
+    } catch (e){ logger.error('demo competitors: ' + e.message); }
+
+    // 7) Webchat sessions + messages — so the Inbox isn't empty.
+    try {
+      const CHAT = [
+        { v: "Hi, are you open this weekend?", a: "We sure are — Saturday 9–5 and Sunday 10–4. Anything we can help with?" },
+        { v: "Do you take walk-ins or do I need an appointment?", a: "Walk-ins are welcome! Booking ahead just guarantees your spot. Want me to set one up?" },
+        { v: "What does a first visit cost?", a: "Great question — first visits start at our standard rate and we'll walk through options when you're in. Want details by text?" },
+        { v: "Where exactly are you located?", a: "We're right downtown with parking out front. Happy to text you the exact address if that's easier." },
+        { v: "Any specials for new customers?", a: "We do have a new-customer welcome offer on your first visit. Want me to send it over?" },
+        { v: "How long is the wait right now?", a: "About 15 minutes at the moment — I can add you to the list so you're set when you arrive." },
+      ];
+      for (const lid of locIds) {
+        let cfgId;
+        const cfg = await query(`INSERT INTO webchat_configs (location_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING id`, [lid]);
+        cfgId = cfg.rows[0] && cfg.rows[0].id;
+        if (!cfgId) { const ex = await query(`SELECT id FROM webchat_configs WHERE location_id=$1 LIMIT 1`, [lid]); cfgId = ex.rows[0] && ex.rows[0].id; }
+        if (!cfgId) continue;
+        const sessCount = demoRand(3, 6);
+        for (let s = 0; s < sessCount; s++) {
+          const person = demoPick(people);
+          const convo = demoPick(CHAT);
+          const status = s < 2 ? 'open' : demoWeighted([['open', 40], ['resolved', 60]]);
+          const sess = await query(
+            `INSERT INTO webchat_sessions
+               (config_id, location_id, visitor_name, visitor_phone, visitor_email, page_url, referrer, user_agent, ip_address, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+            [cfgId, lid, person.full, person.phone, person.email, 'https://swarmreply.com/contact', 'https://www.google.com/', 'Mozilla/5.0', '203.0.113.' + demoRand(2, 250), status]
+          );
+          const sid = sess.rows[0] && sess.rows[0].id;
+          if (!sid) continue;
+          const thread = [
+            ['bot', 'SwarmReply', "Hi there! 👋 How can we help you today?"],
+            ['visitor', person.full, convo.v],
+            ['agent', 'Front desk', convo.a],
+          ];
+          if (status === 'resolved') thread.push(['visitor', person.full, "Perfect — thank you so much!"]);
+          for (const [sender, sname, body] of thread) {
+            await query(
+              `INSERT INTO webchat_messages (session_id, sender, sender_name, body, msg_type, channel)
+               VALUES ($1,$2,$3,$4,'text','webchat')`,
+              [sid, sender, sname, body]
+            );
+          }
+        }
+      }
+    } catch (e){ logger.error('demo webchat: ' + e.message); }
+
     await query(
       'INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
       [custId, 'admin_created_demo', JSON.stringify({ admin: req.admin.email, industry, locations: locs })]
