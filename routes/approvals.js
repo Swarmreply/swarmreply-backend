@@ -75,7 +75,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
 // ── POST /api/approvals/:replyId/approve ──────────────────────────────────────
 // Post the drafted reply to Google as-is
-router.post('/:replyId/approve', authenticateToken, requireRole(['admin','manager']), async (req, res) => {
+router.post('/:replyId/approve', authenticateToken, requireRole(['owner','admin','manager','customer']), async (req, res) => {
   try {
     const loc = await getLocation(req.user.customerId);
     if (!loc) return res.status(404).json({ error: 'Location not found' });
@@ -95,9 +95,13 @@ router.post('/:replyId/approve', authenticateToken, requireRole(['admin','manage
 
     const reply = replyRes.rows[0];
 
-    // Post to Google
-    const googleService = require('../services/googleService');
-    await googleService.postReplyToGoogle(loc.id, reply.platform_review_id, reply.generated_reply);
+    // Post to Google — skipped for demo accounts, whose reviews carry
+    // placeholder platform IDs (demo_*) that aren't real Google reviews.
+    const isDemoReview = (reply.platform_review_id || '').startsWith('demo_');
+    if (!isDemoReview) {
+      const googleService = require('../services/googleService');
+      await googleService.postReplyToGoogle(loc.id, reply.platform_review_id, reply.generated_reply);
+    }
 
     // Update statuses
     await query(
