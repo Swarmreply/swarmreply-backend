@@ -1214,6 +1214,66 @@ const DEMO_DETRACTOR_Q1 = ["Long wait time","Service did not meet expectations",
 const DEMO_DETRACTOR_Q2 = ["Faster service","Clearer communication","More appointment availability","Better follow-up after the visit","More upfront pricing"];
 
 // POST /api/admin/demo
+// Industry-specific social copy for the Campaigns demo (keyed by industry code).
+const DEMO_SOCIAL = {
+  restaurant: [
+    "Tonight's special: house-made pappardelle with slow-braised short rib. Limited portions \u2014 come early! \ud83c\udf5d",
+    "Now taking reservations for the long weekend. Book your table before they're gone \ud83c\udf77",
+    "Behind every great plate is a great team. Thank you to our kitchen crew for another packed Saturday! \ud83d\udc4f",
+    "New on the menu: a citrus burrata salad that tastes like spring. Come try it this week \ud83e\udd57",
+    "Brunch is back every Sunday, 9am\u20132pm. Bottomless mimosas and the fluffiest pancakes in town \ud83e\udd5e",
+    "Thank you for making us your neighborhood spot \u2014 500+ five-star reviews and counting \ud83d\ude4f",
+  ],
+  dental: [
+    "Friendly reminder: most dental benefits reset at year-end. Book your cleaning before you lose them! \ud83e\uddb7",
+    "New patients welcome! Your first visit includes a full exam and digital X-rays. Reserve your spot today.",
+    "Coffee lover? 3 easy ways to keep your smile bright between visits \u2615\u2728",
+    "We know dental visits can feel stressful \u2014 every room has noise-cancelling headphones and a cozy blanket.",
+    "Meet our team: gentle, judgment-free care at every appointment \ud83d\ude0a",
+    "Thank you to our amazing patients for trusting us with your smiles. We don't take it for granted!",
+  ],
+  fitness: [
+    "New class alert: Sunrise HIIT, Tuesdays & Thursdays at 6am. Start your day strong \ud83d\udcaa",
+    "Member spotlight: 6 months of consistency and it shows. So proud of you! \ud83d\udd25",
+    "Bring a friend free all week \u2014 workouts are better together \ud83e\udd1d",
+    "3 stretches to do after every workout to recover faster and feel better tomorrow \ud83e\uddd8",
+    "New equipment just landed \u2014 come check out the upgraded racks and turf zone!",
+    "Your only competition is who you were yesterday. See you on the floor \ud83d\udc5f",
+  ],
+  salon: [
+    "Spring color we're loving: warm honey balayage \ud83c\udf6f Book your transformation this week!",
+    "Swipe-worthy before & after \ud83d\udc87\u200d\u2640\ufe0f Tag a friend who needs a fresh look!",
+    "Now carrying the full Olaplex lineup \u2014 ask your stylist which one's right for you.",
+    "Gift cards available \u2014 the perfect last-minute gift for the people you love \ud83d\udc9d",
+    "Booking up fast for the holidays. Reserve your color or blowout before the calendar fills \ud83d\udcc5",
+    "Thank you for filling our chairs and our hearts this year \ud83d\udc95",
+  ],
+  automotive: [
+    "Heading into winter? Now's the time for a battery and tire check. Stay safe out there \u2744\ufe0f",
+    "Synthetic oil change special this month \u2014 quick, honest, done right. Book online!",
+    "Check engine light on? Don't panic. Free diagnostic scan and a plain-English explanation.",
+    "3 dashboard lights you should never ignore (and what they actually mean) \ud83d\udee0",
+    "Same-day appointments open this week \u2014 give us a call and we'll get you back on the road.",
+    "Thank you to our loyal customers. 5-star service isn't a slogan, it's the only way we work \ud83d\udd27",
+  ],
+  medical: [
+    "Flu season is here \u2014 walk-in vaccines available. Protect yourself and those around you \ud83d\udc89",
+    "Now accepting new patients! Same-week appointments and most major insurance accepted.",
+    "5 simple habits that make the biggest difference for your heart health \u2764\ufe0f",
+    "Telehealth visits now available for follow-ups and quick questions \ud83d\udcf1",
+    "Meet our care team \u2014 here to listen, not rush. Your health is a partnership.",
+    "Thank you for trusting us with your care. We're honored to serve this community \ud83d\ude4f",
+  ],
+  other: [
+    "We're grateful for every customer who walks through our doors. Thank you for your support! \ud83d\ude4c",
+    "Booking up fast this week \u2014 reach out to reserve your spot before we're full \ud83d\udcc5",
+    "New this season: a few upgrades we think you'll love. Come see what's changed!",
+    "A quick tip from our team to help you get the most out of your visit \ud83d\udca1",
+    "Open this weekend! Stop by and say hello \u2014 we'd love to see you.",
+    "500+ happy customers and counting. We don't take a single one for granted \u2b50",
+  ],
+};
+
 router.post('/demo', requireAdmin, async (req, res) => {
   const crypto = require('crypto');
   const bcrypt = require('bcryptjs');
@@ -1466,6 +1526,44 @@ router.post('/demo', requireAdmin, async (req, res) => {
         }
       }
     } catch (e){ logger.error('demo webchat: ' + e.message); }
+
+    // 8) Social posts — so the Campaigns tab shows a real posting history across
+    //    the connected platforms (mostly published, a couple scheduled upcoming).
+    try {
+      const SOCIAL_PLATS = ['facebook','instagram','google','linkedin'];
+      const pool = [...(DEMO_SOCIAL[ind.code] || DEMO_SOCIAL.other)].sort(() => Math.random() - 0.5);
+      const NUM_POSTS = demoRand(8, 12);
+      const rows = [];
+      for (let i = 0; i < NUM_POSTS; i++){
+        const text  = pool[i % pool.length];
+        const plats = SOCIAL_PLATS.filter(() => Math.random() < 0.55);
+        if (!plats.length) plats.push('facebook');
+        const ct = Math.random() < 0.5 ? 'text_image' : 'text';
+        if (i < 2){
+          // upcoming / scheduled
+          rows.push({
+            customer_id: custId, platforms: JSON.stringify(plats), content_type: ct,
+            text_content: text, link_url: null,
+            schedule_at: demoDaysAgo(-demoRand(2, 10), demoRand(0, 23)),
+            platform_results: JSON.stringify({}), status: 'scheduled',
+            created_at: demoDaysAgo(demoRand(0, 2), demoRand(0, 23))
+          });
+        } else {
+          const results = {};
+          plats.forEach(p => { results[p] = 'live'; });
+          rows.push({
+            customer_id: custId, platforms: JSON.stringify(plats), content_type: ct,
+            text_content: text, link_url: null, schedule_at: null,
+            platform_results: JSON.stringify(results), status: 'live',
+            created_at: demoDaysAgo(demoRand(3, 75), demoRand(0, 23))
+          });
+        }
+      }
+      const q = demoBulk('social_posts',
+        ['customer_id','platforms','content_type','text_content','link_url','schedule_at','platform_results','status','created_at'],
+        rows);
+      await query(q.text, q.params);
+    } catch (e){ logger.error('demo social posts: ' + e.message); }
 
     await query(
       'INSERT INTO audit_log (customer_id, action, details) VALUES ($1,$2,$3)',
