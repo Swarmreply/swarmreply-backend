@@ -31,6 +31,7 @@ const helmet   = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { testConnection } = require('./database/db');
 const { startScheduler } = require('./scheduler');
+const { runMigrations } = require('./database/migrate');
 const routes      = require('./routes/index');
 const adminRoutes = require('./routes/admin');
 const webchatRoutes = require('./routes/webchat');
@@ -276,6 +277,19 @@ async function startServer() {
 
   if (!dbConnected) {
     logger.warn('Database connection failed — starting server anyway, will retry on requests');
+  }
+
+  // Apply any pending database migrations before serving. A migration failure
+  // halts boot (loud) rather than serving on a half-applied schema.
+  if (dbConnected) {
+    try {
+      await runMigrations();
+    } catch (err) {
+      logger.error('Startup migration failed -- refusing to boot: ' + err.message);
+      process.exit(1);
+    }
+  } else {
+    logger.warn('Skipping migrations -- database not connected');
   }
 
   // Start HTTP server
