@@ -2273,6 +2273,18 @@ router.get('/review/:token', async (req, res) => {
       .map(pid => PLATFORM_META[pid])
       .filter(p => p && p.url);
 
+    // Modular survey template (decoupled builder output). Fall back to one
+    // derived from legacy config so the page always has a survey to render.
+    const stRes = await query(
+      `SELECT id, config FROM survey_templates
+        WHERE customer_id=$1 AND scope='account' AND is_default=true
+        ORDER BY created_at ASC LIMIT 1`,
+      [row.customer_id]
+    ).catch(() => ({ rows: [] }));
+    const survey = stRes.rows[0]
+      ? { id: stRes.rows[0].id, ...(stRes.rows[0].config || {}) }
+      : surveyTemplateFromLegacy(tmpl);
+
     res.json({
       businessName:    row.business_name,
       contactName:     row.contact_name,
@@ -2288,6 +2300,7 @@ router.get('/review/:token', async (req, res) => {
       detractorQ1:     tmpl.detractorQ1,
       detractorQ2:     tmpl.detractorQ2,
       platforms:       platforms.length ? platforms : [PLATFORM_META.google],
+      survey,
     });
   } catch (err) {
     logger.error('GET /review/:token error:', err.message);
@@ -2299,7 +2312,11 @@ router.get('/review/:token', async (req, res) => {
 router.post('/review/:token/submit', async (req, res) => {
   try {
     const { token } = req.params;
-    const { npsScore, path, wouldReturn, leftReview, platform, detractorQ1, detractorQ2 } = req.body;
+    const b = req.body || {};
+    // Modular payload (answers array) with backward-compatible legacy fields.
+    const score = b.score ?? b.npsScore ?? null;
+    const classification = b.classification || b.path || null;
+    const answers = Array.isArray(b.answers) ? b.answers : [];
 
     const rr = await query(
       'SELECT id, customer_id, location_id FROM review_requests WHERE trigger_ref=$1 LIMIT 1',
@@ -2309,20 +2326,45 @@ router.post('/review/:token/submit', async (req, res) => {
     if (!rr.rows.length) return res.status(404).json({ error: 'Review request not found' });
     const { id: reviewRequestId, customer_id, location_id } = rr.rows[0];
 
-    await query(
+    // Keep the legacy detractor_q1/q2 columns populated (the dashboard reads
+    // them) from explicit fields or the first two free-text answers.
+    const textAnswers = answers.map((a) => a && (a.text || a.answer)).filter(Boolean);
+    const dq1 = b.detractorQ1 || textAnswers[0] || null;
+    const dq2 = b.detractorQ2 || textAnswers[1] || null;
+
+    const ins = await query(
       `INSERT INTO survey_responses
-         (review_request_id, customer_id, location_id, nps_score, path, would_return, left_review, review_platform, detractor_q1, detractor_q2, completed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW())`,
-      [reviewRequestId, customer_id, location_id || null, npsScore, path,
-       wouldReturn ?? null, leftReview || false, platform || null, detractorQ1 || null, detractorQ2 || null]
+         (review_request_id, customer_id, location_id, nps_score, path, would_return, left_review, review_platform, detractor_q1, detractor_q2, template_id, channel, completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+       RETURNING uid`,
+      [reviewRequestId, customer_id, location_id || null, score, classification,
+       b.wouldReturn ?? null, b.leftReview || false, b.platform || null, dq1, dq2,
+       b.templateId || null, b.channel || null]
     );
+    const responseUid = ins.rows[0]?.uid || null;
+
+    // Store each modular answer for filtering/exploration (Phase 4).
+    if (responseUid && answers.length) {
+      for (const a of answers) {
+        if (!a || !a.type) continue;
+        await query(
+          `INSERT INTO survey_answers
+             (response_uid, block_id, block_type, question_text, answer_text, answer_number, answer_options)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [responseUid, a.blockId || null, a.type, a.question || null,
+           a.text || a.answer || null, (a.number ?? null),
+           Array.isArray(a.options) ? a.options : null]
+        ).catch((e) => logger.warn('survey_answer insert skipped: ' + e.message));
+      }
+    }
 
     // Mark the request completed
     await query(
       "UPDATE review_requests SET status='completed' WHERE id=$1", [reviewRequestId]
     ).catch(() => {});
 
-    logger.info('Survey response saved for request ' + reviewRequestId + ' (score ' + npsScore + ', ' + path + ')');
+    logger.info('Survey response saved for request ' + reviewRequestId +
+      ' (score ' + score + ', ' + classification + ', ' + answers.length + ' answers)');
     res.json({ success: true });
   } catch (err) {
     logger.error('POST /review/:token/submit error:', err.message);
