@@ -9,6 +9,7 @@ const { Resend } = require('resend');
 const { query } = require('../database/db');
 const { previewTemplate } = require('./reviewRequestService');
 const logger = require('../utils/logger');
+const { assertEmailCap } = require('./sendMeter');
 
 let _resend = null; function getResend() { if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder'); return _resend; }
 
@@ -88,6 +89,7 @@ async function sendReviewRequest(params) {
     // Send based on channel
     if (template.channel === 'email') {
       if (!contact.email) throw new Error('Email template requires contact email address');
+      await assertEmailCap(location.id); // 5k/location/month fair-use cap
       result = await sendEmail(rendered, contact, location);
     } else if (template.channel === 'sms') {
       if (!contact.phone) throw new Error('SMS template requires contact phone number');
