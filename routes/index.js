@@ -2083,6 +2083,158 @@ router.put('/templates', authenticateToken, async (req, res) => {
   }
 });
 
+// ── SURVEY TEMPLATES (modular survey builder — Phase 3) ───────────────────────
+// Decoupled survey templates live in survey_templates (an account-level default
+// per customer, with room for per-location overrides later). Existing customers
+// are backfilled lazily from their legacy review_templates.config the first time
+// they load this, so nothing is lost.
+
+// Build a starter survey template from a customer's legacy review template.
+function surveyTemplateFromLegacy(cfg) {
+  const c = { ...TEMPLATE_DEFAULTS, ...(cfg || {}) };
+  const promoter = Number(c.promoterMin ?? 9);
+  const neutral  = Number(c.neutralMin ?? 7);
+  return {
+    classifier: {
+      type: 'nps',
+      scale: '0-10',
+      question: c.npsQuestion || TEMPLATE_DEFAULTS.npsQuestion,
+      lowLabel: 'Not likely',
+      highLabel: 'Very likely',
+      thresholds: { promoter, detractor: Math.max(0, neutral - 1) },
+    },
+    paths: {
+      promoter: [],
+      passive: [],
+      detractor: [
+        { blockId: 'd1', type: 'open_text', question: c.detractorQ1 || TEMPLATE_DEFAULTS.detractorQ1 },
+        { blockId: 'd2', type: 'open_text', question: c.detractorQ2 || TEMPLATE_DEFAULTS.detractorQ2 },
+      ],
+    },
+    messages: {
+      promoter: c.promoterMessage || TEMPLATE_DEFAULTS.promoterMessage,
+      passive: c.neutralQuestion || TEMPLATE_DEFAULTS.neutralQuestion,
+      detractorOpening: c.detractorOpening || TEMPLATE_DEFAULTS.detractorOpening,
+      thankYou: 'Thank you for your feedback!',
+    },
+    brand: {
+      color: c.brandColor || TEMPLATE_DEFAULTS.brandColor,
+      logo: c.brandLogo || '',
+      logoPosition: c.brandLogoPosition || 'left',
+    },
+  };
+}
+
+// Ensure the customer has at least one survey template; create a default from
+// legacy config if none exist. Returns the list of templates.
+async function ensureSurveyTemplates(customerId) {
+  const existing = await query(
+    'SELECT * FROM survey_templates WHERE customer_id=$1 ORDER BY is_default DESC, created_at ASC',
+    [customerId]
+  ).catch(() => ({ rows: [] }));
+  if (existing.rows.length) return existing.rows;
+
+  const legacy = await query(
+    'SELECT config FROM review_templates WHERE customer_id=$1', [customerId]
+  ).catch(() => ({ rows: [] }));
+  const cfg = surveyTemplateFromLegacy(legacy.rows[0]?.config);
+
+  const created = await query(
+    `INSERT INTO survey_templates (customer_id, name, config, scope, is_default)
+     VALUES ($1, $2, $3, 'account', true)
+     RETURNING *`,
+    [customerId, 'Post-visit feedback', JSON.stringify(cfg)]
+  ).catch((e) => { logger.error('survey template backfill failed: ' + e.message); return { rows: [] }; });
+
+  return created.rows;
+}
+
+// GET /api/survey-templates — list (with lazy backfill)
+router.get('/survey-templates', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const rows = await ensureSurveyTemplates(customerId);
+    res.json({ templates: rows });
+  } catch (err) {
+    logger.error('GET /survey-templates error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/survey-templates/:id
+router.get('/survey-templates/:id', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const r = await query(
+      'SELECT * FROM survey_templates WHERE id=$1 AND customer_id=$2',
+      [req.params.id, customerId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Template not found' });
+    res.json({ template: r.rows[0] });
+  } catch (err) {
+    logger.error('GET /survey-templates/:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/survey-templates — create
+router.post('/survey-templates', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { name, config, scope, locationId, isDefault } = req.body;
+    const r = await query(
+      `INSERT INTO survey_templates (customer_id, name, config, scope, location_id, is_default)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [customerId, name || 'Untitled survey', JSON.stringify(config || {}),
+       scope === 'location' ? 'location' : 'account', locationId || null, !!isDefault]
+    );
+    res.json({ template: r.rows[0] });
+  } catch (err) {
+    logger.error('POST /survey-templates error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/survey-templates/:id — update name and/or config
+router.put('/survey-templates/:id', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { name, config } = req.body;
+    const r = await query(
+      `UPDATE survey_templates
+          SET name = COALESCE($3, name),
+              config = COALESCE($4, config),
+              updated_at = now()
+        WHERE id=$1 AND customer_id=$2
+      RETURNING *`,
+      [req.params.id, customerId, name ?? null, config ? JSON.stringify(config) : null]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Template not found' });
+    res.json({ template: r.rows[0] });
+  } catch (err) {
+    logger.error('PUT /survey-templates/:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/survey-templates/:id — can't remove the last one
+router.delete('/survey-templates/:id', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const count = await query('SELECT COUNT(*)::int AS n FROM survey_templates WHERE customer_id=$1', [customerId]);
+    if ((count.rows[0]?.n || 0) <= 1) return res.status(400).json({ error: 'You need at least one survey template.' });
+    const r = await query(
+      'DELETE FROM survey_templates WHERE id=$1 AND customer_id=$2 RETURNING id',
+      [req.params.id, customerId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Template not found' });
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('DELETE /survey-templates/:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── PUBLIC REVIEW PAGE (no auth — customer-facing) ────────────────────────────
 // GET /api/review/:token — load survey config + business branding for the page
 router.get('/review/:token', async (req, res) => {
