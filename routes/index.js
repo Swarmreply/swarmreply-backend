@@ -2248,6 +2248,7 @@ router.post('/campaigns/survey-send', authenticateToken, async (req, res) => {
     const customerId = req.user.customerId || req.user.id;
     const segment = (req.body?.segment || 'all').toString().trim().toLowerCase();
     let templateId = req.body?.surveyTemplateId || req.body?.templateId || req.body?.template_id || null;
+    const contactEmails = Array.isArray(req.body?.contactEmails) && req.body.contactEmails.length ? req.body.contactEmails : null;
 
     // Scheduling — a valid future sendAt queues the send for the every-minute
     // sweep (surveyCampaignService.processDueScheduledSurveySends) instead of
@@ -2264,15 +2265,15 @@ router.post('/campaigns/survey-send', authenticateToken, async (req, res) => {
         const locRes = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
         const locationId = locRes.rows[0]?.id || null;
         const ins = await query(
-          "INSERT INTO scheduled_survey_sends (customer_id, location_id, survey_template_id, segment, send_at, status) VALUES ($1,$2,$3,$4,$5,'pending') RETURNING id, send_at",
-          [customerId, locationId, templateId, segment, when.toISOString()]
+          "INSERT INTO scheduled_survey_sends (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails) VALUES ($1,$2,$3,$4,$5,'pending',$6) RETURNING id, send_at",
+          [customerId, locationId, templateId, segment, when.toISOString(), contactEmails ? JSON.stringify(contactEmails) : null]
         );
         return res.json({ success: true, scheduled: true, id: ins.rows[0].id, sendAt: ins.rows[0].send_at });
       }
     }
 
     const { runSurveyCampaign } = require('../services/surveyCampaignService');
-    const result = await runSurveyCampaign({ customerId, segment, templateId });
+    const result = await runSurveyCampaign({ customerId, segment, templateId, contactEmails });
     if (result.capReached) {
       const { EMAIL_CAP } = require('../services/sendMeter');
       return res.status(429).json({ error: `Monthly email limit reached (${EMAIL_CAP.toLocaleString()} per location). It resets at the start of next month.` });
@@ -2289,7 +2290,7 @@ router.get('/campaigns/survey-scheduled', authenticateToken, async (req, res) =>
   try {
     const customerId = req.user.customerId || req.user.id;
     const r = await query(
-      `SELECT s.id, s.segment, s.send_at, s.survey_template_id, t.name AS survey_name
+      `SELECT s.id, s.segment, s.send_at, s.survey_template_id, s.contact_emails, t.name AS survey_name
        FROM scheduled_survey_sends s
        LEFT JOIN survey_templates t ON t.id = s.survey_template_id
        WHERE s.customer_id=$1 AND s.status='pending'
