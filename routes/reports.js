@@ -430,10 +430,12 @@ router.get('/survey-responses', authenticateToken, async (req, res) => {
     const channel = (req.query.channel || 'all').toLowerCase();
     const kw = (req.query.q || '').trim();
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '300', 10) || 300));
+    const templateId = (req.query.templateId && req.query.templateId !== 'all') ? String(req.query.templateId) : null;
 
     const where = ['sr.customer_id = $1', 'sr.completed_at >= NOW() - ($2)::interval'];
     const params = [customerId, days + ' days'];
     let i = 3;
+    if (templateId) { where.push(`sr.template_id = $${i}`); params.push(templateId); i++; }
     if (['promoter', 'passive', 'detractor'].includes(cls)) { where.push(`lower(sr.path) = $${i}`); params.push(cls); i++; }
     if (['email', 'sms'].includes(channel)) { where.push(`sr.channel = $${i}`); params.push(channel); i++; }
     if (kw) {
