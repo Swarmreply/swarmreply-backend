@@ -162,4 +162,33 @@ async function processDueScheduledSurveySends() {
   if (due.rows.length) logger.info(`Survey schedule sweep: processed ${due.rows.length} due send(s)`);
 }
 
-module.exports = { runSurveyCampaign, processDueScheduledSurveySends, surveyCampaignEmailHtml };
+// 5b-3: re-survey guard. True if this contact was surveyed within the last
+// `withinDays` (a completed survey_campaign send) or already has one queued.
+// Used by the automated triggers so a customer isn't surveyed twice in a short
+// window. Manual sends bypass this — the user is choosing to send.
+const RESURVEY_GUARD_DAYS = 30;
+
+async function wasRecentlySurveyed(customerId, email, withinDays = RESURVEY_GUARD_DAYS) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!customerId || !e) return false;
+  const sent = await query(
+    `SELECT 1 FROM review_requests
+      WHERE customer_id=$1 AND lower(contact_email)=$2
+        AND trigger_source='survey_campaign' AND status='sent'
+        AND created_at > NOW() - make_interval(days => $3::int)
+      LIMIT 1`,
+    [customerId, e, withinDays]
+  ).catch(() => ({ rows: [] }));
+  if (sent.rows.length) return true;
+  const pend = await query(
+    "SELECT contact_emails FROM scheduled_survey_sends WHERE customer_id=$1 AND status IN ('pending','sending')",
+    [customerId]
+  ).catch(() => ({ rows: [] }));
+  for (const row of pend.rows) {
+    const arr = Array.isArray(row.contact_emails) ? row.contact_emails : [];
+    if (arr.some((x) => String(x).toLowerCase() === e)) return true;
+  }
+  return false;
+}
+
+module.exports = { runSurveyCampaign, processDueScheduledSurveySends, surveyCampaignEmailHtml, wasRecentlySurveyed, RESURVEY_GUARD_DAYS };

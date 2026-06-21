@@ -234,7 +234,7 @@ async function triggerReviewRequest(integration, contact, eventId, opts = {}) {
   // every-minute sweep (processDueScheduledSurveySends) fires it, immediate or
   // delayed. survey_template_id may be null → the account's default survey.
   if (integration.follow_up_type === 'survey') {
-    const email = ((contact && contact.email) || '').trim();
+    const email = ((contact && contact.email) || '').trim().toLowerCase();
     if (!email) {
       logger.warn(`${integration.provider} survey automation: event has no contact email — skipping`);
       return { success: false, error: 'no contact email' };
@@ -247,6 +247,14 @@ async function triggerReviewRequest(integration, contact, eventId, opts = {}) {
     if (!customerId) {
       logger.warn(`${integration.provider} survey automation: could not resolve customer — skipping`);
       return { success: false, error: 'no customer' };
+    }
+
+    // 5b-3: don't re-survey someone already surveyed in the last 30 days or who
+    // already has a survey queued (e.g. two jobs in the same week).
+    const { wasRecentlySurveyed } = require('./surveyCampaignService');
+    if (await wasRecentlySurveyed(customerId, email)) {
+      logger.info(`${integration.provider} survey automation: ${email} surveyed recently — skipping`);
+      return { success: true, skipped: true, reason: 'recently surveyed' };
     }
 
     // Ensure the contact exists (integration events often arrive for people not
@@ -262,8 +270,8 @@ async function triggerReviewRequest(integration, contact, eventId, opts = {}) {
     const when = (sendAt && sendAt.getTime() > Date.now()) ? sendAt : new Date(Date.now() + 1000);
     await query(
       `INSERT INTO scheduled_survey_sends
-         (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails)
-       VALUES ($1,$2,$3,'all',$4,'pending',$5)`,
+         (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails, source)
+       VALUES ($1,$2,$3,'all',$4,'pending',$5,'integration')`,
       [customerId, integration.location_id || null, integration.survey_template_id || null, when, JSON.stringify([email])]
     );
     await query(
