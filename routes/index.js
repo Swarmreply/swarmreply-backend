@@ -556,7 +556,7 @@ router.get('/account', authenticateToken, async (req, res) => {
     res.json({
       name: row.name || '',
       email: row.email || '',
-      notificationPrefs: row.notification_prefs || { negative: true, all_reviews: false, weekly_digest: true },
+      notificationPrefs: { negative: true, all_reviews: false, weekly_digest: true, monthly_report: true, ...(row.notification_prefs || {}) },
     });
   } catch (err) {
     logger.error('GET /account error:', err.message);
@@ -2252,6 +2252,29 @@ router.delete('/survey-templates/:id', authenticateToken, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     logger.error('DELETE /survey-templates/:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/survey-templates/:id/default — make this the account default survey.
+// Account-scope only (a location override can't be the account default). Demotes
+// the current default first; the unique partial index allows exactly one default,
+// and each statement leaves it valid (demote → 0 defaults, promote → 1).
+router.post('/survey-templates/:id/default', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { id } = req.params;
+    const tgt = await query('SELECT scope, is_default FROM survey_templates WHERE id=$1 AND customer_id=$2', [id, customerId]);
+    if (!tgt.rows.length) return res.status(404).json({ error: 'Survey not found' });
+    if (tgt.rows[0].scope !== 'account') {
+      return res.status(400).json({ error: 'Only an "All locations" survey can be the default. Change its scope to All locations first.' });
+    }
+    if (tgt.rows[0].is_default) return res.json({ success: true });
+    await query("UPDATE survey_templates SET is_default=false WHERE customer_id=$1 AND scope='account' AND is_default=true", [customerId]);
+    await query("UPDATE survey_templates SET is_default=true WHERE id=$1 AND customer_id=$2 AND scope='account'", [id, customerId]);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('POST /survey-templates/:id/default error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
