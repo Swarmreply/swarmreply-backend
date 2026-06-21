@@ -551,12 +551,13 @@ router.get('/grow/stats', authenticateToken, async (req, res) => {
 router.get('/account', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
-    const r = await query('SELECT name, email, notification_prefs FROM customers WHERE id=$1', [customerId]);
+    const r = await query('SELECT name, email, notification_prefs, review_goal FROM customers WHERE id=$1', [customerId]);
     const row = r.rows[0] || {};
     res.json({
       name: row.name || '',
       email: row.email || '',
       notificationPrefs: { negative: true, all_reviews: false, weekly_digest: true, monthly_report: true, ...(row.notification_prefs || {}) },
+      reviewGoal: row.review_goal != null ? row.review_goal : null,
     });
   } catch (err) {
     logger.error('GET /account error:', err.message);
@@ -567,7 +568,7 @@ router.get('/account', authenticateToken, async (req, res) => {
 router.put('/account', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
-    const { name, email, notificationPrefs } = req.body || {};
+    const { name, email, notificationPrefs, reviewGoal } = req.body || {};
 
     if (email !== undefined && !/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(email)) {
       return res.status(400).json({ error: 'Please enter a valid email address.' });
@@ -578,6 +579,11 @@ router.put('/account', authenticateToken, async (req, res) => {
     if (name !== undefined)             { sets.push(`name=$${i++}`);               params.push(name); }
     if (email !== undefined)            { sets.push(`email=$${i++}`);              params.push(email.toLowerCase().trim()); }
     if (notificationPrefs !== undefined){ sets.push(`notification_prefs=$${i++}`); params.push(JSON.stringify(notificationPrefs)); }
+    if (reviewGoal !== undefined) {
+      const g = parseInt(reviewGoal, 10);
+      if (isNaN(g) || g < 1 || g > 100000) return res.status(400).json({ error: 'Goal must be a positive number.' });
+      sets.push(`review_goal=$${i++}`); params.push(g);
+    }
     if (!sets.length) return res.json({ success: true });
 
     params.push(customerId);
