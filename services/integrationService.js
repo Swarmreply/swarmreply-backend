@@ -92,6 +92,7 @@ async function disconnectIntegration(locationId, provider) {
 async function listIntegrations(locationId) {
   const res = await query(
     `SELECT provider, status, trigger_event, delay_minutes,
+            follow_up_type, survey_template_id,
             triggers_received, requests_sent, last_triggered_at,
             last_error, last_error_at, extra_data, created_at
      FROM integrations WHERE location_id = $1
@@ -227,6 +228,54 @@ function delayedSendAt(integration, anchor = null) {
  */
 async function triggerReviewRequest(integration, contact, eventId, opts = {}) {
   const { sendAt = null, externalRef = null } = opts;
+
+  // 5b-1: survey automation — this integration sends a survey instead of a
+  // review request. Queued into scheduled_survey_sends (a one-contact list); the
+  // every-minute sweep (processDueScheduledSurveySends) fires it, immediate or
+  // delayed. survey_template_id may be null → the account's default survey.
+  if (integration.follow_up_type === 'survey') {
+    const email = ((contact && contact.email) || '').trim();
+    if (!email) {
+      logger.warn(`${integration.provider} survey automation: event has no contact email — skipping`);
+      return { success: false, error: 'no contact email' };
+    }
+    let customerId = integration.customer_id;
+    if (!customerId && integration.location_id) {
+      const lr = await query('SELECT customer_id FROM locations WHERE id=$1', [integration.location_id]).catch(() => ({ rows: [] }));
+      customerId = lr.rows[0]?.customer_id || null;
+    }
+    if (!customerId) {
+      logger.warn(`${integration.provider} survey automation: could not resolve customer — skipping`);
+      return { success: false, error: 'no customer' };
+    }
+
+    // Ensure the contact exists (integration events often arrive for people not
+    // yet imported) so the survey send — which targets the contacts table by
+    // email — can reach them. Never overwrites an existing contact.
+    await query(
+      `INSERT INTO contacts (customer_id, name, email, phone, segment)
+       VALUES ($1,$2,$3,$4,'all')
+       ON CONFLICT (customer_id, lower(email)) WHERE email IS NOT NULL DO NOTHING`,
+      [customerId, (contact && contact.name) || null, email, (contact && contact.phone) || null]
+    ).catch((e) => logger.warn('survey automation contact ensure skipped: ' + e.message));
+
+    const when = (sendAt && sendAt.getTime() > Date.now()) ? sendAt : new Date(Date.now() + 1000);
+    await query(
+      `INSERT INTO scheduled_survey_sends
+         (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails)
+       VALUES ($1,$2,$3,'all',$4,'pending',$5)`,
+      [customerId, integration.location_id || null, integration.survey_template_id || null, when, JSON.stringify([email])]
+    );
+    await query(
+      `UPDATE integrations
+       SET triggers_received = triggers_received + 1,
+           last_triggered_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [integration.id]
+    );
+    logger.info(`Scheduled ${integration.provider} survey for ${when.toISOString()}`);
+    return { success: true, scheduled: true, survey: true, sendAt: when };
+  }
 
   // Immediate path (no delay configured, or anchor already passed)
   if (!sendAt || sendAt.getTime() <= Date.now() + 5000) {
