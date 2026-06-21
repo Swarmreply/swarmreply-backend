@@ -2290,7 +2290,7 @@ router.get('/campaigns/survey-scheduled', authenticateToken, async (req, res) =>
   try {
     const customerId = req.user.customerId || req.user.id;
     const r = await query(
-      `SELECT s.id, s.segment, s.send_at, s.survey_template_id, s.contact_emails, t.name AS survey_name
+      `SELECT s.id, s.segment, s.send_at, s.survey_template_id, s.contact_emails, s.source, t.name AS survey_name
        FROM scheduled_survey_sends s
        LEFT JOIN survey_templates t ON t.id = s.survey_template_id
        WHERE s.customer_id=$1 AND s.status='pending'
@@ -2698,15 +2698,24 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
     const autoSurvey = (req.body.autoSurvey && req.body.autoSurvey.enabled) ? req.body.autoSurvey : null;
     const surveyDelayMs = autoSurvey ? Math.max(0, Number(autoSurvey.delayDays) || 0) * 86400000 : 0;
     const surveyTemplateId = autoSurvey ? (autoSurvey.surveyTemplateId || null) : null;
-    // Don't double-schedule anyone who already has a survey queued (re-imports,
-    // integration auto-sends). Fetch their emails once, check in memory.
+    // Don't re-survey anyone who already has a survey queued (re-imports,
+    // integration auto-sends) or who was surveyed recently. Fetch once, check
+    // in memory so a large import stays fast.
     const pendingEmails = new Set();
     if (autoSurvey) {
-      const pend = await query("SELECT contact_emails FROM scheduled_survey_sends WHERE customer_id=$1 AND status='pending'", [customerId]).catch(() => ({ rows: [] }));
+      const { RESURVEY_GUARD_DAYS } = require('../services/surveyCampaignService');
+      const pend = await query("SELECT contact_emails FROM scheduled_survey_sends WHERE customer_id=$1 AND status IN ('pending','sending')", [customerId]).catch(() => ({ rows: [] }));
       for (const row of pend.rows) {
         const arr = Array.isArray(row.contact_emails) ? row.contact_emails : [];
         for (const e of arr) pendingEmails.add(String(e).toLowerCase());
       }
+      const recent = await query(
+        `SELECT lower(contact_email) AS email FROM review_requests
+          WHERE customer_id=$1 AND trigger_source='survey_campaign' AND status='sent'
+            AND created_at > NOW() - make_interval(days => $2::int)`,
+        [customerId, RESURVEY_GUARD_DAYS]
+      ).catch(() => ({ rows: [] }));
+      for (const row of recent.rows) if (row.email) pendingEmails.add(row.email);
     }
     for (const r of rows) {
       const email = (r.email || '').trim().toLowerCase();
@@ -2771,8 +2780,8 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
             if (sendAt.getTime() <= Date.now() + 120000) sendAt = new Date(Date.now() + 120000);
             await query(
               `INSERT INTO scheduled_survey_sends
-                 (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails)
-               VALUES ($1,$2,$3,'all',$4,'pending',$5)`,
+                 (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails, source)
+               VALUES ($1,$2,$3,'all',$4,'pending',$5,'csv_import')`,
               [customerId, locationId, surveyTemplateId, sendAt, JSON.stringify([email])]
             ).catch((e) => logger.warn('auto-survey schedule skipped: ' + e.message));
             pendingEmails.add(email);
