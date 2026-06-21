@@ -28,7 +28,7 @@ function surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLog
 // Sends the chosen survey to every emailable contact in a segment.
 // Returns { sent, failed, skipped, audience, capped }. capReached=true means the
 // monthly email cap was already hit and nothing was sent.
-async function runSurveyCampaign({ customerId, segment, templateId, contactEmails }) {
+async function runSurveyCampaign({ customerId, segment, templateId, contactEmails, locationId: locationIdParam }) {
   const seg = (segment || 'all').toString().trim().toLowerCase();
   const picked = Array.isArray(contactEmails)
     ? contactEmails.map((e) => (e || '').toString().trim().toLowerCase()).filter(Boolean)
@@ -43,8 +43,18 @@ async function runSurveyCampaign({ customerId, segment, templateId, contactEmail
 
   const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
   const businessName = custResult.rows[0]?.name || 'Your Business';
-  const locResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
-  const locationId = locResult.rows[0]?.id || null;
+  // Location: prefer the caller's location (e.g. an integration's location, for
+  // per-location survey resolution) when it belongs to this customer; otherwise
+  // fall back to the customer's primary location.
+  let locationId = null;
+  if (locationIdParam) {
+    const okLoc = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [locationIdParam, customerId]).catch(() => ({ rows: [] }));
+    if (okLoc.rows.length) locationId = locationIdParam;
+  }
+  if (!locationId) {
+    const locResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
+    locationId = locResult.rows[0]?.id || null;
+  }
 
   const tmplRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
   const tmpl = tmplRes.rows[0]?.config || {};
@@ -147,6 +157,7 @@ async function processDueScheduledSurveySends() {
         segment: row.segment,
         templateId: row.survey_template_id,
         contactEmails: row.contact_emails,
+        locationId: row.location_id,
       });
       const failedSend = !!result.capReached;
       await query(
