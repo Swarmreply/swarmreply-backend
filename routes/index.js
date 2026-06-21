@@ -2690,8 +2690,24 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
     ).catch(() => ({ rows: [] }));
     const locationId = locRes.rows[0]?.id || null;
 
-    let imported = 0, updated = 0, skipped = 0;
+    let imported = 0, updated = 0, skipped = 0, scheduledSurveys = 0;
     const smsRows = [];   // phone-bearing rows to mirror into Campaigns › Contacts
+
+    // 5b-2: optionally auto-schedule a survey for each contact, timed off the
+    // visit date in their CSV row. Reuses scheduled_survey_sends + the sweep.
+    const autoSurvey = (req.body.autoSurvey && req.body.autoSurvey.enabled) ? req.body.autoSurvey : null;
+    const surveyDelayMs = autoSurvey ? Math.max(0, Number(autoSurvey.delayDays) || 0) * 86400000 : 0;
+    const surveyTemplateId = autoSurvey ? (autoSurvey.surveyTemplateId || null) : null;
+    // Don't double-schedule anyone who already has a survey queued (re-imports,
+    // integration auto-sends). Fetch their emails once, check in memory.
+    const pendingEmails = new Set();
+    if (autoSurvey) {
+      const pend = await query("SELECT contact_emails FROM scheduled_survey_sends WHERE customer_id=$1 AND status='pending'", [customerId]).catch(() => ({ rows: [] }));
+      for (const row of pend.rows) {
+        const arr = Array.isArray(row.contact_emails) ? row.contact_emails : [];
+        for (const e of arr) pendingEmails.add(String(e).toLowerCase());
+      }
+    }
     for (const r of rows) {
       const email = (r.email || '').trim().toLowerCase();
       const name  = (r.name || '').trim();
@@ -2744,6 +2760,25 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
         if (phoneDigits) {
           smsRows.push({ name: name || null, phone, email: email || null, tags: segVal ? [segVal] : [] });
         }
+
+        // 5b-2: schedule a survey for this contact, timed off their visit date.
+        // Skip contacts whose visit was >60 days ago; if the window already
+        // passed, send shortly after import. Never double-schedule a pending one.
+        if (autoSurvey && email && !pendingEmails.has(email)) {
+          const visit = r.visit_date ? new Date(r.visit_date) : null;
+          if (visit && !isNaN(visit.getTime()) && visit.getTime() >= Date.now() - 60 * 86400000) {
+            let sendAt = new Date(visit.getTime() + surveyDelayMs);
+            if (sendAt.getTime() <= Date.now() + 120000) sendAt = new Date(Date.now() + 120000);
+            await query(
+              `INSERT INTO scheduled_survey_sends
+                 (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails)
+               VALUES ($1,$2,$3,'all',$4,'pending',$5)`,
+              [customerId, locationId, surveyTemplateId, sendAt, JSON.stringify([email])]
+            ).catch((e) => logger.warn('auto-survey schedule skipped: ' + e.message));
+            pendingEmails.add(email);
+            scheduledSurveys++;
+          }
+        }
       } catch (e) {
         skipped++;
       }
@@ -2766,8 +2801,8 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
       [customerId, filename || 'import.csv', rows.length, imported + updated, skipped]
     ).catch(() => {});
 
-    logger.info('Contact import: ' + imported + ' new, ' + updated + ' updated, ' + skipped + ' skipped, ' + smsImported + ' to SMS for ' + customerId);
-    res.json({ success: true, imported, updated, skipped, smsImported, total: rows.length });
+    logger.info('Contact import: ' + imported + ' new, ' + updated + ' updated, ' + skipped + ' skipped, ' + smsImported + ' to SMS, ' + scheduledSurveys + ' surveys scheduled for ' + customerId);
+    res.json({ success: true, imported, updated, skipped, smsImported, scheduledSurveys, total: rows.length });
   } catch (err) {
     logger.error('contacts/import error:', err.message);
     res.status(500).json({ error: err.message });
