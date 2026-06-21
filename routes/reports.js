@@ -420,4 +420,76 @@ router.post('/competitors/refresh', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/reports/survey-responses — filterable responses + per-question answers.
+// Powers the Responses Explorer. Filters: days, classification, channel, q (keyword).
+router.get('/survey-responses', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const days = Math.min(3650, Math.max(1, parseInt(req.query.days || '90', 10) || 90));
+    const cls = (req.query.classification || 'all').toLowerCase();
+    const channel = (req.query.channel || 'all').toLowerCase();
+    const kw = (req.query.q || '').trim();
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit || '300', 10) || 300));
+
+    const where = ['sr.customer_id = $1', 'sr.completed_at >= NOW() - ($2)::interval'];
+    const params = [customerId, days + ' days'];
+    let i = 3;
+    if (['promoter', 'passive', 'detractor'].includes(cls)) { where.push(`lower(sr.path) = $${i}`); params.push(cls); i++; }
+    if (['email', 'sms'].includes(channel)) { where.push(`sr.channel = $${i}`); params.push(channel); i++; }
+    if (kw) {
+      where.push(`(EXISTS (SELECT 1 FROM survey_answers sa WHERE sa.response_uid = sr.uid AND sa.answer_text ILIKE $${i}) OR sr.detractor_q1 ILIKE $${i} OR sr.detractor_q2 ILIKE $${i})`);
+      params.push('%' + kw + '%'); i++;
+    }
+
+    const respR = await query(
+      `SELECT sr.uid, sr.completed_at, sr.nps_score, sr.path, sr.channel, sr.location_id,
+              sr.detractor_q1, sr.detractor_q2, rr.contact_name, rr.contact_email
+         FROM survey_responses sr
+         LEFT JOIN review_requests rr ON rr.id = sr.review_request_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY sr.completed_at DESC NULLS LAST
+        LIMIT ${limit}`,
+      params
+    ).catch((e) => { logger.warn('survey-responses query: ' + e.message); return { rows: [] }; });
+
+    const responses = respR.rows;
+    const uids = responses.map((r) => r.uid).filter(Boolean);
+
+    const answersByUid = {};
+    if (uids.length) {
+      const aR = await query(
+        `SELECT response_uid, block_type, question_text, answer_text, answer_number, answer_options
+           FROM survey_answers WHERE response_uid = ANY($1) ORDER BY created_at ASC`,
+        [uids]
+      ).catch(() => ({ rows: [] }));
+      for (const a of aR.rows) {
+        (answersByUid[a.response_uid] = answersByUid[a.response_uid] || []).push({
+          type: a.block_type, question: a.question_text,
+          text: a.answer_text, number: a.answer_number, options: a.answer_options,
+        });
+      }
+    }
+
+    const out = responses.map((r) => {
+      let answers = answersByUid[r.uid] || [];
+      if (!answers.length && (r.detractor_q1 || r.detractor_q2)) {
+        answers = [
+          r.detractor_q1 ? { type: 'open_text', question: 'What fell short?', text: r.detractor_q1 } : null,
+          r.detractor_q2 ? { type: 'open_text', question: 'What could we do better?', text: r.detractor_q2 } : null,
+        ].filter(Boolean);
+      }
+      return {
+        uid: r.uid, completedAt: r.completed_at, score: r.nps_score,
+        classification: r.path, channel: r.channel, locationId: r.location_id,
+        contactName: r.contact_name, contactEmail: r.contact_email, answers,
+      };
+    });
+
+    res.json({ responses: out, total: out.length });
+  } catch (err) {
+    logger.error('GET /reports/survey-responses error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
