@@ -429,7 +429,8 @@ router.get('/stats', authenticateToken, async (req, res) => {
       query(
         `SELECT COUNT(*) FILTER (WHERE nps_score >= 9) promoters,
                 COUNT(*) FILTER (WHERE nps_score <= 6) detractors,
-                COUNT(*) total
+                COUNT(*) total,
+                COUNT(*) FILTER (WHERE completed_at >= NOW() - INTERVAL '7 days') responses_this_week
          FROM survey_responses
          WHERE customer_id = $1 AND completed_at >= NOW() - INTERVAL '90 days'`,
         [customerId]
@@ -451,6 +452,7 @@ router.get('/stats', authenticateToken, async (req, res) => {
     const n = nps.rows[0] || {};
     const npsTotal = parseInt(n.total) || 0;
     stats.nps_responses = npsTotal;
+    stats.responses_this_week = parseInt(n.responses_this_week) || 0;
     stats.nps_score = npsTotal
       ? Math.round(100 * ((parseInt(n.promoters) || 0) - (parseInt(n.detractors) || 0)) / npsTotal)
       : null;
