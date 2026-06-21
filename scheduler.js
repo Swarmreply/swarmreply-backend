@@ -14,6 +14,7 @@ const { runDailySync } = require('./services/listingsService');
 const { runWeeklyDirectoryScan } = require('./services/directoryCheckService');
 const { runDueCompetitorScans } = require('./scheduler.competitors');
 const { runDueRankChecks } = require('./scheduler.rank');
+const { generateMonthlyReports } = require('./services/reportService');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -135,6 +136,23 @@ function startScheduler() {
     } catch (error) {
       logger.error('Scheduler: Weekly digest failed:', error.message);
       captureError(error, { job: 'weekly-digest' });
+    }
+  });
+
+  // ============================================
+  // JOB 3b: Monthly reputation reports
+  // Runs on the 1st of each month at 9am. Sends a full
+  // reputation report (reviews, replies, sentiment, NPS /
+  // survey feedback) to each active location's customer,
+  // unless they've turned the report off in settings.
+  // ============================================
+  cron.schedule('0 9 1 * *', async () => {
+    logger.info('Scheduler: Generating monthly reputation reports');
+    try {
+      await generateMonthlyReports();
+    } catch (error) {
+      logger.error('Scheduler: Monthly report job failed:', error.message);
+      captureError(error, { job: 'monthly-report' });
     }
   });
 
