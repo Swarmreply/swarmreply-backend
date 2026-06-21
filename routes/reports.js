@@ -492,4 +492,49 @@ router.get('/survey-responses', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/reports/survey-questions — per-question answer distributions (for charts).
+router.get('/survey-questions', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const days = Math.min(3650, Math.max(1, parseInt(req.query.days || '90', 10) || 90));
+    const rowsR = await query(
+      `SELECT sa.question_text AS question, sa.block_type AS type,
+              COALESCE(NULLIF(sa.answer_text, ''), sa.answer_number::text) AS value,
+              COUNT(*)::int AS count
+         FROM survey_answers sa
+         JOIN survey_responses sr ON sr.uid = sa.response_uid
+        WHERE sr.customer_id = $1
+          AND sr.completed_at >= NOW() - ($2)::interval
+          AND sa.question_text IS NOT NULL
+          AND sa.block_type IN ('multiple_choice','yes_no','rating','star','smiley','nps')
+          AND COALESCE(NULLIF(sa.answer_text, ''), sa.answer_number::text) IS NOT NULL
+        GROUP BY sa.question_text, sa.block_type, value
+        ORDER BY sa.question_text, count DESC`,
+      [customerId, days + ' days']
+    ).catch((e) => { logger.warn('survey-questions query: ' + e.message); return { rows: [] }; });
+
+    const byQ = {}; const order = [];
+    for (const r of rowsR.rows) {
+      const key = r.question + '||' + r.type;
+      if (!byQ[key]) { byQ[key] = { question: r.question, type: r.type, total: 0, options: [] }; order.push(key); }
+      byQ[key].options.push({ value: r.value, count: r.count });
+      byQ[key].total += r.count;
+    }
+    const questions = order.map((k) => {
+      const qd = byQ[k];
+      if (['rating', 'star', 'smiley', 'nps'].includes(qd.type)) {
+        let sum = 0, nn = 0;
+        qd.options.forEach((o) => { const v = parseFloat(o.value); if (!isNaN(v)) { sum += v * o.count; nn += o.count; } });
+        qd.avg = nn ? Math.round((sum / nn) * 10) / 10 : null;
+        qd.options.sort((a, b) => parseFloat(a.value) - parseFloat(b.value));
+      }
+      return qd;
+    });
+    res.json({ questions });
+  } catch (err) {
+    logger.error('GET /reports/survey-questions error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
