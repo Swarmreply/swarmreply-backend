@@ -31,7 +31,8 @@ async function generateMonthlyReports() {
       `SELECT l.*, c.email as customer_email, c.name as customer_name, c.id as customer_id
        FROM locations l
        JOIN customers c ON l.customer_id = c.id
-       WHERE l.is_active = true AND c.status = 'active'`,
+       WHERE l.is_active = true AND c.status = 'active'
+         AND (c.notification_prefs->>'monthly_report') IS DISTINCT FROM 'false'`,
       []
     );
 
@@ -57,17 +58,18 @@ async function generateMonthlyReports() {
  */
 async function generateAndSendReport(location) {
   // Get last 30 days of data
-  const [reviewData, sentimentData, replyStats] = await Promise.all([
+  const [reviewData, sentimentData, replyStats, surveyData] = await Promise.all([
     getReviewData(location.id),
     getLocationSentimentTrend(location.id, 30),
-    getReplyStats(location.id)
+    getReplyStats(location.id),
+    getSurveyData(location.customer_id)
   ]);
 
   // Generate AI narrative summary
   const narrative = await generateNarrative(location, reviewData, sentimentData);
 
   // Build report HTML
-  const reportHtml = buildReportHTML(location, reviewData, sentimentData, replyStats, narrative);
+  const reportHtml = buildReportHTML(location, reviewData, sentimentData, replyStats, narrative, surveyData);
 
   // Send via email
   const monthName = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
@@ -160,6 +162,28 @@ async function getReplyStats(locationId) {
   return { ...stats, responseRate };
 }
 
+async function getSurveyData(customerId) {
+  // Survey/NPS results over the last 30 days. survey_responses is customer-level,
+  // so this is account-wide. NPS is computed over scored (NPS) responses only;
+  // `responses` counts every survey submission (NPS + Custom).
+  const result = await query(
+    `SELECT COUNT(*) FILTER (WHERE nps_score >= 9) AS promoters,
+            COUNT(*) FILTER (WHERE nps_score <= 6 AND nps_score IS NOT NULL) AS detractors,
+            COUNT(*) FILTER (WHERE nps_score IS NOT NULL) AS nps_total,
+            COUNT(*) AS responses
+     FROM survey_responses
+     WHERE customer_id = $1 AND completed_at >= NOW() - INTERVAL '30 days'`,
+    [customerId]
+  );
+  const r = result.rows[0] || {};
+  const npsTotal = parseInt(r.nps_total) || 0;
+  const promoters = parseInt(r.promoters) || 0;
+  const detractors = parseInt(r.detractors) || 0;
+  const responses = parseInt(r.responses) || 0;
+  const npsScore = npsTotal ? Math.round(100 * (promoters - detractors) / npsTotal) : null;
+  return { responses, npsScore, npsTotal, promoters, detractors };
+}
+
 // ============================================
 // AI NARRATIVE GENERATOR
 // ============================================
@@ -213,7 +237,7 @@ function getDefaultNarrative(location, reviewData) {
  * buildReportHTML()
  * Build the full styled monthly report email
  */
-function buildReportHTML(location, reviewData, sentimentData, replyStats, narrative) {
+function buildReportHTML(location, reviewData, sentimentData, replyStats, narrative, surveyData) {
   const monthName = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   const prevMonthName = new Date(new Date().setMonth(new Date().getMonth() - 1))
     .toLocaleDateString('en-US', { month: 'long' });
@@ -320,6 +344,30 @@ function buildReportHTML(location, reviewData, sentimentData, replyStats, narrat
       ${starBars}
     </table>
   </div>
+
+  <!-- Survey feedback -->
+  ${surveyData && surveyData.responses > 0 ? `
+  <div style="background:white;border:1px solid #e4e0d8;border-top:none;padding:24px 36px;">
+    <h2 style="font-size:0.875rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#7a7670;margin:0 0 16px">
+      Survey feedback
+    </h2>
+    <div style="display:flex;gap:0;">
+      <div style="flex:1;text-align:center;padding:8px;">
+        <div style="font-size:2rem;font-weight:700;color:#0d0d0d;font-family:Georgia,serif">${surveyData.npsScore != null ? surveyData.npsScore : '—'}</div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#7a7670;margin-top:4px">NPS score</div>
+      </div>
+      <div style="flex:1;text-align:center;padding:8px;border-left:1px solid #f0eeea;">
+        <div style="font-size:2rem;font-weight:700;color:#0d0d0d;font-family:Georgia,serif">${surveyData.responses}</div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#7a7670;margin-top:4px">Responses</div>
+      </div>
+      ${surveyData.npsTotal > 0 ? `
+      <div style="flex:1;text-align:center;padding:8px;border-left:1px solid #f0eeea;">
+        <div style="font-size:2rem;font-weight:700;color:#1a6b45;font-family:Georgia,serif">${surveyData.promoters}</div>
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#7a7670;margin-top:4px">Promoters</div>
+      </div>` : ''}
+    </div>
+    ${surveyData.npsScore != null ? `<p style="font-size:12px;color:#a8a39a;margin:14px 0 0;text-align:center">Net Promoter Score over the last 30 days · ${surveyData.npsTotal} scored ${surveyData.npsTotal === 1 ? 'response' : 'responses'}</p>` : ''}
+  </div>` : ''}
 
   <!-- Topics Mentioned -->
   ${sentimentData.topTopics.length > 0 ? `
