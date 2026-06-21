@@ -1966,6 +1966,23 @@ router.post('/review-requests/send', authenticateToken, async (req, res) => {
       return res.status(502).json({ error: 'Email was not accepted. Verify swarmreply.com at resend.com/domains' });
     }
 
+    // Add (or refresh) this person in the contact list so manual sends show up in
+    // Bulk Send alongside imported contacts. Fill-only: never overwrites existing
+    // fields, deduped case-insensitively by email. Non-fatal — the request is sent.
+    try {
+      await query(
+        `INSERT INTO contacts (customer_id, name, email, phone, segment, location_id)
+         VALUES ($1,$2,$3,$4,'all',$5)
+         ON CONFLICT (customer_id, lower(email)) WHERE email IS NOT NULL
+         DO UPDATE SET name=COALESCE(EXCLUDED.name, contacts.name),
+                       phone=COALESCE(EXCLUDED.phone, contacts.phone),
+                       location_id=COALESCE(EXCLUDED.location_id, contacts.location_id)`,
+        [customerId, name || null, email.trim(), phone || null, locationId || null]
+      );
+    } catch (e) {
+      logger.error('contact upsert after review request failed:', e.message);
+    }
+
     logger.info('Review request sent to ' + email + ' (id ' + sendData.id + ')');
     res.json({ success: true, id: sendData.id, reviewLink });
   } catch (err) {
