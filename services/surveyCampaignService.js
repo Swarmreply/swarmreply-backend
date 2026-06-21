@@ -43,18 +43,17 @@ async function runSurveyCampaign({ customerId, segment, templateId, contactEmail
 
   const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
   const businessName = custResult.rows[0]?.name || 'Your Business';
-  // Location: prefer the caller's location (e.g. an integration's location, for
-  // per-location survey resolution) when it belongs to this customer; otherwise
-  // fall back to the customer's primary location.
-  let locationId = null;
+  // Location resolution (5c-1/5c-2). A "forced" location from the caller (e.g.
+  // an integration's location) is authoritative for the whole send. Otherwise
+  // each contact resolves to its own location (5c-2), falling back to primary.
+  let forcedLocationId = null;
   if (locationIdParam) {
     const okLoc = await query('SELECT id FROM locations WHERE id=$1 AND customer_id=$2', [locationIdParam, customerId]).catch(() => ({ rows: [] }));
-    if (okLoc.rows.length) locationId = locationIdParam;
+    if (okLoc.rows.length) forcedLocationId = locationIdParam;
   }
-  if (!locationId) {
-    const locResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
-    locationId = locResult.rows[0]?.id || null;
-  }
+  const primResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
+  const primaryLocationId = primResult.rows[0]?.id || null;
+  const locationId = forcedLocationId || primaryLocationId;
 
   const tmplRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
   const tmpl = tmplRes.rows[0]?.config || {};
@@ -65,13 +64,13 @@ async function runSurveyCampaign({ customerId, segment, templateId, contactEmail
   // Either way, only emailable contacts; opted-out are skipped below.
   const audRes = picked.length
     ? await query(
-        `SELECT name, email, phone FROM contacts
+        `SELECT name, email, phone, location_id FROM contacts
           WHERE customer_id=$1 AND email IS NOT NULL AND email <> ''
             AND lower(email) = ANY($2)`,
         [customerId, picked]
       ).catch(() => ({ rows: [] }))
     : await query(
-        `SELECT name, email, phone FROM contacts
+        `SELECT name, email, phone, location_id FROM contacts
           WHERE customer_id=$1 AND email IS NOT NULL AND email <> ''
             AND ($2 = 'all' OR lower(segment) = $2)`,
         [customerId, seg]
@@ -105,9 +104,10 @@ async function runSurveyCampaign({ customerId, segment, templateId, contactEmail
     if (optedOut.has(email.toLowerCase())) { skipped++; continue; }
     const token = crypto.randomBytes(16).toString('hex');
     const firstName = (t.name || '').trim().split(' ')[0] || 'there';
+    const rrLoc = forcedLocationId || t.location_id || primaryLocationId;
     await query(
       "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status, template_id) VALUES ($1,$2,$3,$4,$5,'survey_campaign',$6,'sent',$7)",
-      [customerId, locationId, t.name || null, email, t.phone || null, token, tId]
+      [customerId, rrLoc, t.name || null, email, t.phone || null, token, tId]
     ).catch((e) => logger.warn('survey campaign insert error:', e.message));
     const link = 'https://app.swarmreply.com/review/' + token;
     const html = surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, link });
