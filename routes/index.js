@@ -2264,6 +2264,14 @@ router.post('/campaigns/survey-send', authenticateToken, async (req, res) => {
     const customerId = req.user.customerId || req.user.id;
     const seg = (req.body?.segment || 'all').toString().trim().toLowerCase();
 
+    // Which survey to send. Null = the account default (backward-compatible).
+    // Validate it belongs to this customer so a stray/foreign id can't be stored.
+    let templateId = req.body?.surveyTemplateId || req.body?.templateId || req.body?.template_id || null;
+    if (templateId) {
+      const ok = await query('SELECT id FROM survey_templates WHERE id=$1 AND customer_id=$2', [templateId, customerId]).catch(() => ({ rows: [] }));
+      if (!ok.rows.length) templateId = null;
+    }
+
     const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
     const businessName = custResult.rows[0]?.name || 'Your Business';
     const locResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
@@ -2311,8 +2319,8 @@ router.post('/campaigns/survey-send', authenticateToken, async (req, res) => {
       const token = crypto.randomBytes(16).toString('hex');
       const firstName = (t.name || '').trim().split(' ')[0] || 'there';
       await query(
-        "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status) VALUES ($1,$2,$3,$4,$5,'survey_campaign',$6,'sent')",
-        [customerId, locationId, t.name || null, email, t.phone || null, token]
+        "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status, template_id) VALUES ($1,$2,$3,$4,$5,'survey_campaign',$6,'sent',$7)",
+        [customerId, locationId, t.name || null, email, t.phone || null, token, templateId]
       ).catch((e) => logger.warn('survey campaign insert error:', e.message));
       const link = 'https://app.swarmreply.com/review/' + token;
       const html = surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, link });
@@ -2351,7 +2359,7 @@ router.get('/review/:token', async (req, res) => {
     const { token } = req.params;
 
     const rr = await query(
-      `SELECT rr.id, rr.contact_name, rr.customer_id, rr.location_id, c.name AS business_name
+      `SELECT rr.id, rr.contact_name, rr.customer_id, rr.location_id, rr.template_id, c.name AS business_name
        FROM review_requests rr
        JOIN customers c ON c.id = rr.customer_id
        WHERE rr.trigger_ref = $1
@@ -2382,13 +2390,16 @@ router.get('/review/:token', async (req, res) => {
       .map(pid => PLATFORM_META[pid])
       .filter(p => p && p.url);
 
-    // Modular survey template (decoupled builder output). Fall back to one
-    // derived from legacy config so the page always has a survey to render.
+    // Modular survey template (decoupled builder output). Resolve the survey
+    // this request was sent for (rr.template_id); fall back to the account
+    // default, then to one derived from legacy config. Null template_id (every
+    // pre-4e-c request) resolves the default exactly as before.
     const stRes = await query(
       `SELECT id, config FROM survey_templates
-        WHERE customer_id=$1 AND scope='account' AND is_default=true
-        ORDER BY created_at ASC LIMIT 1`,
-      [row.customer_id]
+        WHERE customer_id=$1 AND (id=$2 OR (scope='account' AND is_default=true))
+        ORDER BY (id=$2) DESC, is_default DESC, created_at ASC
+        LIMIT 1`,
+      [row.customer_id, row.template_id || null]
     ).catch(() => ({ rows: [] }));
     const survey = stRes.rows[0]
       ? { id: stRes.rows[0].id, ...(stRes.rows[0].config || {}) }
