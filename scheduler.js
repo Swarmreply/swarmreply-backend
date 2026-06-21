@@ -9,6 +9,7 @@ const reviewProcessor = require('./services/reviewProcessor');
 const { runDueScans } = require('./scheduler.llm');
 const { resyncPendingBilling } = require('./services/locationBilling');
 const { processDueScheduledRequests } = require('./services/integrationService');
+const { processDueScheduledSurveySends } = require('./services/surveyCampaignService');
 const { runDailySync } = require('./services/listingsService');
 const { runWeeklyDirectoryScan } = require('./services/directoryCheckService');
 const { runDueCompetitorScans } = require('./scheduler.competitors');
@@ -75,6 +76,20 @@ function startScheduler() {
     } catch (error) {
       logger.error('Scheduler: send-timing sweep failed:', error.message);
       captureError(error, { job: 'send-timing-sweep' });
+    }
+  });
+
+  // ============================================
+  // Survey schedule sweep — every minute
+  // Fires survey campaigns queued for a future time
+  // (POST /campaigns/survey-send with a future sendAt).
+  // ============================================
+  cron.schedule('* * * * *', async () => {
+    try {
+      await processDueScheduledSurveySends();
+    } catch (error) {
+      logger.error('Scheduler: survey schedule sweep failed:', error.message);
+      captureError(error, { job: 'survey-schedule-sweep' });
     }
   });
 
