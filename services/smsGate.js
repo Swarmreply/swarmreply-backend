@@ -11,9 +11,19 @@
 // ════════════════════════════════════════════════════════════════
 
 let _client = null;
+let _clientTried = false;
 function twilioClient() {
-  if (!_client && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-    _client = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  if (!_client && !_clientTried && process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+    _clientTried = true; // only attempt once per process — don't re-throw on every poll
+    try {
+      _client = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    } catch (err) {
+      // Credentials are set but the client could not be created — most often
+      // because the "twilio" package isn't installed. Degrade to "not
+      // configured" instead of crashing the request (this file is fail-soft).
+      console.error('[smsGate] Twilio credentials are set but the client could not be initialized (is the "twilio" package in dependencies?):', err && err.message ? err.message : err);
+      _client = null;
+    }
   }
   return _client;
 }
