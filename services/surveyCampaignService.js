@@ -28,8 +28,11 @@ function surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLog
 // Sends the chosen survey to every emailable contact in a segment.
 // Returns { sent, failed, skipped, audience, capped }. capReached=true means the
 // monthly email cap was already hit and nothing was sent.
-async function runSurveyCampaign({ customerId, segment, templateId }) {
+async function runSurveyCampaign({ customerId, segment, templateId, contactEmails }) {
   const seg = (segment || 'all').toString().trim().toLowerCase();
+  const picked = Array.isArray(contactEmails)
+    ? contactEmails.map((e) => (e || '').toString().trim().toLowerCase()).filter(Boolean)
+    : [];
 
   // Validate the survey belongs to this customer; otherwise fall back to default.
   let tId = templateId || null;
@@ -48,13 +51,21 @@ async function runSurveyCampaign({ customerId, segment, templateId }) {
   const brandColor = tmpl.brandColor || '#f5c842';
   const brandLogo = tmpl.brandLogo || 'https://swarmreply.com/bee-logo.png';
 
-  // Audience: contacts in the segment with an email.
-  const audRes = await query(
-    `SELECT name, email, phone FROM contacts
-      WHERE customer_id=$1 AND email IS NOT NULL AND email <> ''
-        AND ($2 = 'all' OR lower(segment) = $2)`,
-    [customerId, seg]
-  ).catch(() => ({ rows: [] }));
+  // Audience: either a hand-picked list of contacts, or everyone in a segment.
+  // Either way, only emailable contacts; opted-out are skipped below.
+  const audRes = picked.length
+    ? await query(
+        `SELECT name, email, phone FROM contacts
+          WHERE customer_id=$1 AND email IS NOT NULL AND email <> ''
+            AND lower(email) = ANY($2)`,
+        [customerId, picked]
+      ).catch(() => ({ rows: [] }))
+    : await query(
+        `SELECT name, email, phone FROM contacts
+          WHERE customer_id=$1 AND email IS NOT NULL AND email <> ''
+            AND ($2 = 'all' OR lower(segment) = $2)`,
+        [customerId, seg]
+      ).catch(() => ({ rows: [] }));
   const audience = audRes.rows;
   if (!audience.length) return { sent: 0, failed: 0, skipped: 0, audience: 0, capped: false };
 
@@ -135,6 +146,7 @@ async function processDueScheduledSurveySends() {
         customerId: row.customer_id,
         segment: row.segment,
         templateId: row.survey_template_id,
+        contactEmails: row.contact_emails,
       });
       const failedSend = !!result.capReached;
       await query(
