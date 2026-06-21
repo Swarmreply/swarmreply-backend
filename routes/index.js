@@ -2184,6 +2184,10 @@ router.post('/survey-templates', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
     const { name, config, scope, locationId, isDefault } = req.body;
+    // 5c-1: one override per location — free the location of any prior survey.
+    if (scope === 'location' && locationId) {
+      await query("UPDATE survey_templates SET scope='account', location_id=NULL, updated_at=now() WHERE customer_id=$1 AND scope='location' AND location_id=$2", [customerId, locationId]);
+    }
     const r = await query(
       `INSERT INTO survey_templates (customer_id, name, config, scope, location_id, is_default)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
@@ -2201,15 +2205,30 @@ router.post('/survey-templates', authenticateToken, async (req, res) => {
 router.put('/survey-templates/:id', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
-    const { name, config } = req.body;
+    const { name, config, scope, locationId } = req.body;
+
+    // 5c-1: assignment changes. Assigning to a location is blocked for the
+    // account default (would leave the account with no default), and first
+    // demotes any other survey already assigned to that location so each
+    // location keeps exactly one override.
+    if (scope === 'location') {
+      const cur = await query('SELECT is_default FROM survey_templates WHERE id=$1 AND customer_id=$2', [req.params.id, customerId]);
+      if (!cur.rows.length) return res.status(404).json({ error: 'Template not found' });
+      if (cur.rows[0].is_default) return res.status(400).json({ error: 'This is your default survey. Set another survey as the default before assigning this one to a location.' });
+      if (!locationId) return res.status(400).json({ error: 'Pick a location to assign this survey to.' });
+      await query("UPDATE survey_templates SET scope='account', location_id=NULL, updated_at=now() WHERE customer_id=$1 AND scope='location' AND location_id=$2 AND id<>$3", [customerId, locationId, req.params.id]);
+    }
+
     const r = await query(
       `UPDATE survey_templates
           SET name = COALESCE($3, name),
               config = COALESCE($4, config),
+              scope = COALESCE($5, scope),
+              location_id = CASE WHEN $5='location' THEN $6 WHEN $5='account' THEN NULL ELSE location_id END,
               updated_at = now()
         WHERE id=$1 AND customer_id=$2
       RETURNING *`,
-      [req.params.id, customerId, name ?? null, config ? JSON.stringify(config) : null]
+      [req.params.id, customerId, name ?? null, config ? JSON.stringify(config) : null, scope ?? null, locationId ?? null]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Template not found' });
     res.json({ template: r.rows[0] });
@@ -2366,10 +2385,16 @@ router.get('/review/:token', async (req, res) => {
     // pre-4e-c request) resolves the default exactly as before.
     const stRes = await query(
       `SELECT id, config FROM survey_templates
-        WHERE customer_id=$1 AND (id=$2 OR (scope='account' AND is_default=true))
-        ORDER BY (id=$2) DESC, is_default DESC, created_at ASC
+        WHERE customer_id=$1 AND (
+          id=$2
+          OR (scope='location' AND location_id=$3)
+          OR (scope='account' AND is_default=true)
+        )
+        ORDER BY (id=$2) DESC,
+                 (scope='location' AND location_id=$3) DESC,
+                 is_default DESC, created_at ASC
         LIMIT 1`,
-      [row.customer_id, row.template_id || null]
+      [row.customer_id, row.template_id || null, row.location_id || null]
     ).catch(() => ({ rows: [] }));
     const survey = stRes.rows[0]
       ? { id: stRes.rows[0].id, ...(stRes.rows[0].config || {}) }
