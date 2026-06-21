@@ -2283,11 +2283,10 @@ router.post('/campaigns/survey-send', authenticateToken, async (req, res) => {
           const ok = await query('SELECT id FROM survey_templates WHERE id=$1 AND customer_id=$2', [templateId, customerId]).catch(() => ({ rows: [] }));
           if (!ok.rows.length) templateId = null;
         }
-        const locRes = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
-        const locationId = locRes.rows[0]?.id || null;
+        // 5c-2: per-contact location resolution at send time — no forced location.
         const ins = await query(
           "INSERT INTO scheduled_survey_sends (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails) VALUES ($1,$2,$3,$4,$5,'pending',$6) RETURNING id, send_at",
-          [customerId, locationId, templateId, segment, when.toISOString(), contactEmails ? JSON.stringify(contactEmails) : null]
+          [customerId, null, templateId, segment, when.toISOString(), contactEmails ? JSON.stringify(contactEmails) : null]
         );
         return res.json({ success: true, scheduled: true, id: ins.rows[0].id, sendAt: ins.rows[0].send_at });
       }
@@ -2717,6 +2716,14 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
     ).catch(() => ({ rows: [] }));
     const locationId = locRes.rows[0]?.id || null;
 
+    // 5c-2: tag imported contacts with a location so non-integration sends
+    // resolve the right per-location survey. A per-row "Location" column (matched
+    // by business name) wins; otherwise the import-level location applies.
+    const allLocs = await query('SELECT id, business_name FROM locations WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
+    const locByName = new Map(allLocs.rows.map((l) => [String(l.business_name || '').trim().toLowerCase(), l.id]));
+    const validLocIds = new Set(allLocs.rows.map((l) => l.id));
+    const importLocationId = (req.body.importLocationId && validLocIds.has(req.body.importLocationId)) ? req.body.importLocationId : null;
+
     let imported = 0, updated = 0, skipped = 0, scheduledSurveys = 0;
     const smsRows = [];   // phone-bearing rows to mirror into Campaigns › Contacts
 
@@ -2754,6 +2761,9 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
       // Per-row segment tag from the CSV (falls back to a body-level segment).
       const rowSeg = (r.segment || segment || '').toString().trim().toLowerCase();
       const segVal = rowSeg || null;
+      // 5c-2: per-row location (matched by business name) → import-level → none.
+      const rowLocName = (r.location || '').toString().trim().toLowerCase();
+      const contactLocId = (rowLocName && locByName.get(rowLocName)) || importLocationId || null;
 
       try {
         // 1) Overwrite an existing contact that matches on phone (compared digits-only,
@@ -2773,22 +2783,24 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
         if (matchedId) {
           await query(
             `UPDATE contacts
-                SET name=COALESCE($2, name), email=$3, phone=$4, segment=COALESCE($5, segment)
+                SET name=COALESCE($2, name), email=$3, phone=$4, segment=COALESCE($5, segment),
+                    location_id=COALESCE($6, location_id)
               WHERE id=$1`,
-            [matchedId, name || null, email || null, phone || null, segVal]
+            [matchedId, name || null, email || null, phone || null, segVal, contactLocId]
           );
           updated++;
         } else {
           // 2) Otherwise upsert on email — overwrites an existing same-email contact.
           const result = await query(
-            `INSERT INTO contacts (customer_id, name, email, phone, segment)
-             VALUES ($1,$2,$3,$4, COALESCE($5, 'all'))
+            `INSERT INTO contacts (customer_id, name, email, phone, segment, location_id)
+             VALUES ($1,$2,$3,$4, COALESCE($5, 'all'), $6)
              ON CONFLICT (customer_id, lower(email)) WHERE email IS NOT NULL
              DO UPDATE SET name=COALESCE(EXCLUDED.name, contacts.name),
                            phone=COALESCE(EXCLUDED.phone, contacts.phone),
-                           segment=COALESCE($5, contacts.segment)
+                           segment=COALESCE($5, contacts.segment),
+                           location_id=COALESCE($6, contacts.location_id)
              RETURNING (xmax = 0) AS inserted`,
-            [customerId, name || null, email || null, phone || null, segVal]
+            [customerId, name || null, email || null, phone || null, segVal, contactLocId]
           );
           if (result.rows[0]?.inserted) imported++; else updated++;
         }
@@ -2809,7 +2821,7 @@ router.post('/contacts/import', authenticateToken, async (req, res) => {
               `INSERT INTO scheduled_survey_sends
                  (customer_id, location_id, survey_template_id, segment, send_at, status, contact_emails, source)
                VALUES ($1,$2,$3,'all',$4,'pending',$5,'csv_import')`,
-              [customerId, locationId, surveyTemplateId, sendAt, JSON.stringify([email])]
+              [customerId, null, surveyTemplateId, sendAt, JSON.stringify([email])]
             ).catch((e) => logger.warn('auto-survey schedule skipped: ' + e.message));
             pendingEmails.add(email);
             scheduledSurveys++;
