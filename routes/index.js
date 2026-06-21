@@ -2407,12 +2407,12 @@ router.post('/review/:token/submit', async (req, res) => {
     const answers = Array.isArray(b.answers) ? b.answers : [];
 
     const rr = await query(
-      'SELECT id, customer_id, location_id FROM review_requests WHERE trigger_ref=$1 LIMIT 1',
+      'SELECT id, customer_id, location_id, contact_email FROM review_requests WHERE trigger_ref=$1 LIMIT 1',
       [token]
     ).catch(() => ({ rows: [] }));
 
     if (!rr.rows.length) return res.status(404).json({ error: 'Review request not found' });
-    const { id: reviewRequestId, customer_id, location_id } = rr.rows[0];
+    const { id: reviewRequestId, customer_id, location_id, contact_email: contactEmail } = rr.rows[0];
 
     // Keep the legacy detractor_q1/q2 columns populated (the dashboard reads
     // them) from explicit fields or the first two free-text answers.
@@ -2443,6 +2443,23 @@ router.post('/review/:token/submit', async (req, res) => {
            a.text || a.answer || null, (a.number ?? null),
            Array.isArray(a.options) ? a.options : null]
         ).catch((e) => logger.warn('survey_answer insert skipped: ' + e.message));
+      }
+    }
+
+    // Contact write-back — if a contact-capture block collected details, fill in
+    // any blanks on the contact this survey was sent to. We never overwrite an
+    // existing value or change the email (the identity key), and only touch the
+    // contact matched by this request's own email — so a public token can only
+    // ever enrich its own contact, never retarget or clobber.
+    const cap = b.contact && typeof b.contact === 'object' ? b.contact : null;
+    if (cap && contactEmail && (cap.name || cap.phone)) {
+      const sets = [];
+      const vals = [customer_id, contactEmail];
+      if (cap.name) { vals.push(String(cap.name).trim().slice(0, 200)); sets.push(`name = COALESCE(NULLIF(name, ''), $${vals.length})`); }
+      if (cap.phone) { vals.push(String(cap.phone).trim().slice(0, 50)); sets.push(`phone = COALESCE(NULLIF(phone, ''), $${vals.length})`); }
+      if (sets.length) {
+        await query(`UPDATE contacts SET ${sets.join(', ')} WHERE customer_id=$1 AND lower(email)=lower($2)`, vals)
+          .catch((e) => logger.warn('contact write-back skipped: ' + e.message));
       }
     }
 
