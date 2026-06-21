@@ -82,7 +82,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
 // PUT /api/integrations/:provider/settings
 router.put('/:provider/settings', authenticateToken, async (req, res) => {
-  const { delayMinutes, templateId } = req.body;
+  const { delayMinutes, templateId, followUpType, surveyTemplateId } = req.body;
   try {
     const locs = await query(
       'SELECT id FROM locations WHERE customer_id = $1 LIMIT 1',
@@ -90,12 +90,16 @@ router.put('/:provider/settings', authenticateToken, async (req, res) => {
     );
     await query(
       `UPDATE integrations
-       SET delay_minutes = COALESCE($3, delay_minutes),
-           template_id   = COALESCE($4, template_id),
-           updated_at    = NOW()
+       SET delay_minutes      = COALESCE($3, delay_minutes),
+           template_id        = COALESCE($4, template_id),
+           follow_up_type     = COALESCE($5, follow_up_type),
+           survey_template_id = CASE WHEN $5::text IS NULL THEN survey_template_id ELSE $6 END,
+           updated_at         = NOW()
        WHERE location_id = $1 AND provider = $2`,
       [locs.rows[0]?.id, req.params.provider,
-       delayMinutes ?? null, templateId ?? null]
+       delayMinutes ?? null, templateId ?? null,
+       followUpType ?? null,
+       (followUpType === 'survey' ? (surveyTemplateId ?? null) : null)]
     );
     res.json({ success: true });
   } catch (err) {
