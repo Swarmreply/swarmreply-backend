@@ -512,7 +512,7 @@ router.get('/survey-questions', authenticateToken, async (req, res) => {
         WHERE sr.customer_id = $1
           AND sr.completed_at >= NOW() - ($2)::interval
           AND sa.question_text IS NOT NULL
-          AND sa.block_type IN ('multiple_choice','yes_no','rating','star','smiley','nps')
+          AND sa.block_type IN ('multiple_choice','dropdown','yes_no','rating','star','smiley','nps')
           AND COALESCE(NULLIF(sa.answer_text, ''), sa.answer_number::text) IS NOT NULL${tClause}
         GROUP BY sa.question_text, sa.block_type, value
         ORDER BY sa.question_text, count DESC`,
