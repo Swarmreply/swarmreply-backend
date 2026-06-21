@@ -177,12 +177,12 @@ router.get('/insights', authenticateToken, async (req, res) => {
         ROUND(AVG(CASE WHEN rv.status='replied'
               THEN EXTRACT(EPOCH FROM (rp.posted_at - rv.created_at))/3600 END)::numeric,1) avg_resp_hours,
         COUNT(CASE WHEN rv.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) reviews_30d`;
-  const npsSelect = `SELECT COUNT(*) total,
+  const npsSelect = `SELECT COUNT(*) FILTER (WHERE nps_score IS NOT NULL) total,
         COUNT(*) FILTER (WHERE nps_score >= 9) promoters,
         COUNT(*) FILTER (WHERE nps_score BETWEEN 7 AND 8) passives,
         COUNT(*) FILTER (WHERE nps_score <= 6) detractors,
-        ROUND(100.0 * COUNT(*) FILTER (WHERE would_return) / NULLIF(COUNT(*),0)) would_return_pct,
-        ROUND(100.0 * COUNT(*) FILTER (WHERE left_review) / NULLIF(COUNT(*),0)) left_review_pct`;
+        ROUND(100.0 * COUNT(*) FILTER (WHERE would_return AND nps_score IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE nps_score IS NOT NULL),0)) would_return_pct,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE left_review AND nps_score IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE nps_score IS NOT NULL),0)) left_review_pct`;
 
   try {
     const [
@@ -499,6 +499,10 @@ router.get('/survey-questions', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
     const days = Math.min(3650, Math.max(1, parseInt(req.query.days || '90', 10) || 90));
+    const templateId = (req.query.templateId && req.query.templateId !== 'all') ? String(req.query.templateId) : null;
+    const params = [customerId, days + ' days'];
+    const tClause = templateId ? ' AND sr.template_id = $3' : '';
+    if (templateId) params.push(templateId);
     const rowsR = await query(
       `SELECT sa.question_text AS question, sa.block_type AS type,
               COALESCE(NULLIF(sa.answer_text, ''), sa.answer_number::text) AS value,
@@ -509,10 +513,10 @@ router.get('/survey-questions', authenticateToken, async (req, res) => {
           AND sr.completed_at >= NOW() - ($2)::interval
           AND sa.question_text IS NOT NULL
           AND sa.block_type IN ('multiple_choice','yes_no','rating','star','smiley','nps')
-          AND COALESCE(NULLIF(sa.answer_text, ''), sa.answer_number::text) IS NOT NULL
+          AND COALESCE(NULLIF(sa.answer_text, ''), sa.answer_number::text) IS NOT NULL${tClause}
         GROUP BY sa.question_text, sa.block_type, value
         ORDER BY sa.question_text, count DESC`,
-      [customerId, days + ' days']
+      params
     ).catch((e) => { logger.warn('survey-questions query: ' + e.message); return { rows: [] }; });
 
     const byQ = {}; const order = [];
@@ -535,6 +539,57 @@ router.get('/survey-questions', authenticateToken, async (req, res) => {
     res.json({ questions });
   } catch (err) {
     logger.error('GET /reports/survey-questions error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/reports/survey-nps?days=&templateId= — NPS aggregate for one survey
+// (or all). Counts only scored responses, so custom surveys return total 0.
+router.get('/survey-nps', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const days = Math.min(3650, Math.max(1, parseInt(req.query.days || '90', 10) || 90));
+    const templateId = (req.query.templateId && req.query.templateId !== 'all') ? String(req.query.templateId) : null;
+    const params = [customerId, days + ' days'];
+    const tClause = templateId ? ' AND sr.template_id = $3' : '';
+    if (templateId) params.push(templateId);
+
+    const aggR = await query(
+      `SELECT COUNT(*)::int total,
+              COUNT(*) FILTER (WHERE nps_score >= 9)::int promoters,
+              COUNT(*) FILTER (WHERE nps_score BETWEEN 7 AND 8)::int passives,
+              COUNT(*) FILTER (WHERE nps_score <= 6)::int detractors,
+              ROUND(100.0 * COUNT(*) FILTER (WHERE would_return) / NULLIF(COUNT(*),0)) would_return_pct
+         FROM survey_responses sr
+        WHERE sr.customer_id = $1 AND sr.completed_at >= NOW() - ($2)::interval
+          AND sr.nps_score IS NOT NULL${tClause}`,
+      params
+    ).catch((e) => { logger.warn('survey-nps agg: ' + e.message); return { rows: [{}] }; });
+    const a = aggR.rows[0] || {};
+    const total = Number(a.total) || 0;
+    const promoters = Number(a.promoters) || 0;
+    const detractors = Number(a.detractors) || 0;
+    const score = total ? Math.round(100 * (promoters - detractors) / total) : null;
+
+    const reasonsR = await query(
+      `SELECT detractor_q1 reason, COUNT(*)::int count
+         FROM survey_responses sr
+        WHERE sr.customer_id = $1 AND sr.completed_at >= NOW() - ($2)::interval
+          AND lower(sr.path) = 'detractor' AND sr.detractor_q1 IS NOT NULL${tClause}
+        GROUP BY 1 ORDER BY count DESC LIMIT 6`,
+      params
+    ).catch(() => ({ rows: [] }));
+
+    res.json({
+      nps: {
+        score, total, scoreDelta: null,
+        promoters, passives: Number(a.passives) || 0, detractors,
+        wouldReturnPct: Number(a.would_return_pct) || 0,
+        reasons: reasonsR.rows.map((r) => ({ reason: r.reason, count: Number(r.count) })),
+      },
+    });
+  } catch (err) {
+    logger.error('GET /reports/survey-nps error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
