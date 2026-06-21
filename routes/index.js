@@ -2240,114 +2240,81 @@ router.delete('/survey-templates/:id', authenticateToken, async (req, res) => {
 // review_requests + /review/:token rails (so the modular renderer and response
 // storage work unchanged) and logs to review_request_sends so survey sends
 // count against the same 5k/location/month email cap.
-function surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, link }) {
-  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
-    '<body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif">' +
-    '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px">' +
-    '<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">' +
-    '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0">' +
-    '<img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain"></td></tr>' +
-    '<tr><td style="background:#ffffff;padding:36px 32px">' +
-    '<h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How was your experience, ' + firstName + '?</h2>' +
-    '<div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' +
-    'We&rsquo;d love your honest feedback about your experience with ' + businessName + '. It takes about 30 seconds and helps us do better.</div>' +
-    '<div style="text-align:center"><a href="' + link + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Start the survey &rarr;</a></div>' +
-    '</td></tr>' +
-    '<tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center">' +
-    '<span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span></td></tr>' +
-    '</table></td></tr></table></body></html>';
-}
+// surveyCampaignEmailHtml now lives in services/surveyCampaignService.js
 
 // POST /api/campaigns/survey-send — send the survey to a contact segment
 router.post('/campaigns/survey-send', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
-    const seg = (req.body?.segment || 'all').toString().trim().toLowerCase();
-
-    // Which survey to send. Null = the account default (backward-compatible).
-    // Validate it belongs to this customer so a stray/foreign id can't be stored.
+    const segment = (req.body?.segment || 'all').toString().trim().toLowerCase();
     let templateId = req.body?.surveyTemplateId || req.body?.templateId || req.body?.template_id || null;
-    if (templateId) {
-      const ok = await query('SELECT id FROM survey_templates WHERE id=$1 AND customer_id=$2', [templateId, customerId]).catch(() => ({ rows: [] }));
-      if (!ok.rows.length) templateId = null;
-    }
 
-    const custResult = await query('SELECT name FROM customers WHERE id=$1', [customerId]);
-    const businessName = custResult.rows[0]?.name || 'Your Business';
-    const locResult = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
-    const locationId = locResult.rows[0]?.id || null;
-
-    const tmplRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
-    const tmpl = { ...TEMPLATE_DEFAULTS, ...(tmplRes.rows[0]?.config || {}) };
-    const brandColor = tmpl.brandColor || '#f5c842';
-    const brandLogo = tmpl.brandLogo || 'https://swarmreply.com/bee-logo.png';
-
-    // Audience: contacts in the segment with an email.
-    const audRes = await query(
-      `SELECT name, email, phone FROM contacts
-        WHERE customer_id=$1 AND email IS NOT NULL AND email <> ''
-          AND ($2 = 'all' OR lower(segment) = $2)`,
-      [customerId, seg]
-    ).catch(() => ({ rows: [] }));
-    const audience = audRes.rows;
-    if (!audience.length) return res.json({ success: true, sent: 0, failed: 0, skipped: 0, audience: 0, message: 'No contacts with an email in that segment.' });
-
-    // Skip opted-out contacts (column may not exist on older schemas).
-    let optedOut = new Set();
-    try {
-      const oo = await query("SELECT lower(email) AS email FROM contacts WHERE customer_id=$1 AND opted_out=true AND email IS NOT NULL", [customerId]);
-      optedOut = new Set(oo.rows.map((r) => r.email));
-    } catch (e) { /* no opted_out column */ }
-
-    // 5k/location/month cap — survey sends count too.
-    const { EMAIL_CAP, monthlyEmailCount } = require('../services/sendMeter');
-    let used = 0;
-    try { used = await monthlyEmailCount(locationId); } catch (e) { /* fail open */ }
-    const remaining = Math.max(0, EMAIL_CAP - used);
-    if (remaining <= 0) return res.status(429).json({ error: `Monthly email limit reached (${EMAIL_CAP.toLocaleString()} per location). It resets at the start of next month.` });
-
-    const { Resend } = require('resend');
-    const resend = new Resend(process.env.RESEND_TRANSACTIONAL_KEY || process.env.RESEND_API_KEY);
-    const crypto = require('crypto');
-    let sent = 0, failed = 0, skipped = 0, capped = false;
-
-    for (const t of audience) {
-      if (sent >= remaining) { capped = true; break; }
-      const email = (t.email || '').trim();
-      if (!email) { failed++; continue; }
-      if (optedOut.has(email.toLowerCase())) { skipped++; continue; }
-      const token = crypto.randomBytes(16).toString('hex');
-      const firstName = (t.name || '').trim().split(' ')[0] || 'there';
-      await query(
-        "INSERT INTO review_requests (customer_id, location_id, contact_name, contact_email, contact_phone, trigger_source, trigger_ref, status, template_id) VALUES ($1,$2,$3,$4,$5,'survey_campaign',$6,'sent',$7)",
-        [customerId, locationId, t.name || null, email, t.phone || null, token, templateId]
-      ).catch((e) => logger.warn('survey campaign insert error:', e.message));
-      const link = 'https://app.swarmreply.com/review/' + token;
-      const html = surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, link });
-      try {
-        const { data, error } = await resend.emails.send({
-          from: process.env.SMTP_FROM || 'SwarmReply <nick@swarmreply.com>',
-          to: [email],
-          subject: 'How was your experience, ' + firstName + '?',
-          text: 'Hi ' + firstName + ', we would love your feedback about your experience with ' + businessName + '. It takes 30 seconds: ' + link,
-          html,
-        });
-        if (error || !data?.id) { failed++; }
-        else {
-          sent++;
-          await query(
-            "INSERT INTO review_request_sends (location_id, contact_name, contact_email, contact_phone, channel, status, message_id) VALUES ($1,$2,$3,$4,'email','sent',$5)",
-            [locationId, t.name || null, email, t.phone || null, data.id]
-          ).catch(() => {});
+    // Scheduling — a valid future sendAt queues the send for the every-minute
+    // sweep (surveyCampaignService.processDueScheduledSurveySends) instead of
+    // sending now. No sendAt, or one already due, sends immediately as before.
+    const sendAtRaw = req.body?.sendAt || req.body?.send_at || null;
+    if (sendAtRaw) {
+      const when = new Date(sendAtRaw);
+      if (isNaN(when.getTime())) return res.status(400).json({ error: 'Invalid schedule time.' });
+      if (when.getTime() > Date.now() + 30000) {
+        if (templateId) {
+          const ok = await query('SELECT id FROM survey_templates WHERE id=$1 AND customer_id=$2', [templateId, customerId]).catch(() => ({ rows: [] }));
+          if (!ok.rows.length) templateId = null;
         }
-      } catch (e) { failed++; logger.warn('survey email error ' + email + ':', e.message); }
-      await new Promise((r) => setTimeout(r, 400));
+        const locRes = await query('SELECT id FROM locations WHERE customer_id=$1 LIMIT 1', [customerId]).catch(() => ({ rows: [] }));
+        const locationId = locRes.rows[0]?.id || null;
+        const ins = await query(
+          "INSERT INTO scheduled_survey_sends (customer_id, location_id, survey_template_id, segment, send_at, status) VALUES ($1,$2,$3,$4,$5,'pending') RETURNING id, send_at",
+          [customerId, locationId, templateId, segment, when.toISOString()]
+        );
+        return res.json({ success: true, scheduled: true, id: ins.rows[0].id, sendAt: ins.rows[0].send_at });
+      }
     }
 
-    logger.info('Survey campaign: ' + sent + ' sent, ' + failed + ' failed, ' + skipped + ' skipped' + (capped ? ' (hit monthly cap)' : ''));
-    res.json({ success: true, sent, failed, skipped, audience: audience.length, capped });
+    const { runSurveyCampaign } = require('../services/surveyCampaignService');
+    const result = await runSurveyCampaign({ customerId, segment, templateId });
+    if (result.capReached) {
+      const { EMAIL_CAP } = require('../services/sendMeter');
+      return res.status(429).json({ error: `Monthly email limit reached (${EMAIL_CAP.toLocaleString()} per location). It resets at the start of next month.` });
+    }
+    res.json({ success: true, sent: result.sent, failed: result.failed, skipped: result.skipped, audience: result.audience, capped: result.capped });
   } catch (err) {
     logger.error('survey-send error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/campaigns/survey-scheduled — upcoming (pending) scheduled survey sends
+router.get('/campaigns/survey-scheduled', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const r = await query(
+      `SELECT s.id, s.segment, s.send_at, s.survey_template_id, t.name AS survey_name
+       FROM scheduled_survey_sends s
+       LEFT JOIN survey_templates t ON t.id = s.survey_template_id
+       WHERE s.customer_id=$1 AND s.status='pending'
+       ORDER BY s.send_at ASC`,
+      [customerId]
+    ).catch(() => ({ rows: [] }));
+    res.json({ scheduled: r.rows });
+  } catch (err) {
+    logger.error('survey-scheduled list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/campaigns/survey-scheduled/:id — cancel a pending scheduled send
+router.delete('/campaigns/survey-scheduled/:id', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const r = await query(
+      "UPDATE scheduled_survey_sends SET status='canceled' WHERE id=$1 AND customer_id=$2 AND status='pending' RETURNING id",
+      [req.params.id, customerId]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found, already sent, or already canceled.' });
+    res.json({ success: true, canceled: r.rows[0].id });
+  } catch (err) {
+    logger.error('survey-scheduled cancel error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
