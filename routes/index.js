@@ -606,6 +606,43 @@ router.put('/account', authenticateToken, async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 const _supportSends = new Map(); // customerId -> [timestamps]
 
+// ════════════════════════════════════════════════════════════════
+// SUPPORT ASSISTANT — POST /api/support/ask
+// Second-line AI: answers a customer's question grounded in the Help Center,
+// or returns { escalate:true } so the widget shows the human ticket form.
+// Authenticated; in-memory throttle of 20 questions per customer per hour.
+// Always degrades to escalate on any error — support can never break here.
+// ════════════════════════════════════════════════════════════════
+const _supportAsks = new Map(); // customerId -> [timestamps]
+
+router.post('/support/ask', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const question = String(req.body?.question || '').trim();
+    const history  = Array.isArray(req.body?.history) ? req.body.history.slice(-6) : [];
+
+    if (!question)              return res.json({ answer: null, escalate: true, articles: [] });
+    if (question.length > 1000) return res.status(400).json({ error: 'Question is too long (max 1,000 characters).' });
+
+    // Throttle: 20 AI answers per customer per rolling hour
+    const now = Date.now();
+    const recent = (_supportAsks.get(customerId) || []).filter(t => now - t < 3600000);
+    if (recent.length >= 20) {
+      return res.json({ answer: null, escalate: true, rateLimited: true, articles: [] });
+    }
+    recent.push(now);
+    _supportAsks.set(customerId, recent);
+
+    const supportAgent = require('../services/supportAgentService');
+    const result = await supportAgent.answer(question, history, { plan: req.user.plan });
+    return res.json(result);
+  } catch (err) {
+    logger.error('POST /support/ask error:', err.message);
+    // Never block support — the client falls back to the human form.
+    return res.json({ answer: null, escalate: true, articles: [] });
+  }
+});
+
 router.post('/support', authenticateToken, async (req, res) => {
   try {
     const customerId = req.user.customerId || req.user.id;
