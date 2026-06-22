@@ -3004,6 +3004,110 @@ router.post('/contacts/:id/opt-out', authenticateToken, async (req, res) => {
   }
 });
 
+// ── POST /api/contacts ────────────────────────────────────────────────────────
+// Add a single contact from Manage Contacts. Deduped by email (case-insensitive).
+router.post('/contacts', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const b = req.body || {};
+    const name = (b.name || '').trim() || null;
+    const email = (b.email || '').trim().toLowerCase() || null;
+    const phone = (b.phone || '').trim() || null;
+    const segment = ((b.segment || 'all').trim().toLowerCase()) || 'all';
+    if (!email && !phone) return res.status(400).json({ error: 'Add at least an email or mobile number.' });
+    if (email && !/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (email) {
+      const dup = await query('SELECT id FROM contacts WHERE customer_id=$1 AND lower(email)=$2 LIMIT 1', [customerId, email]);
+      if (dup.rows.length) return res.status(409).json({ error: 'A contact with that email already exists.' });
+    }
+    const r = await query(
+      `INSERT INTO contacts (customer_id, name, email, phone, segment) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [customerId, name, email, phone, segment]
+    );
+    res.json({ success: true, id: r.rows[0].id });
+  } catch (err) {
+    logger.error('contact add error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PUT /api/contacts/:id ─────────────────────────────────────────────────────
+// Edit a contact's details. Only provided fields change.
+router.put('/contacts/:id', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const b = req.body || {};
+    const sets = [], params = [];
+    let i = 1;
+    if (b.name !== undefined) { sets.push(`name=$${i++}`); params.push((b.name || '').trim() || null); }
+    if (b.email !== undefined) {
+      const email = (b.email || '').trim().toLowerCase() || null;
+      if (email && !/^[^\s@,]+@[^\s@,]+\.[^\s@,]{2,}$/.test(email)) {
+        return res.status(400).json({ error: 'Please enter a valid email address.' });
+      }
+      if (email) {
+        const dup = await query('SELECT id FROM contacts WHERE customer_id=$1 AND lower(email)=$2 AND id<>$3 LIMIT 1', [customerId, email, req.params.id]);
+        if (dup.rows.length) return res.status(409).json({ error: 'Another contact already has that email.' });
+      }
+      sets.push(`email=$${i++}`); params.push(email);
+    }
+    if (b.phone !== undefined) { sets.push(`phone=$${i++}`); params.push((b.phone || '').trim() || null); }
+    if (b.segment !== undefined) { sets.push(`segment=$${i++}`); params.push(((b.segment || 'all').trim().toLowerCase()) || 'all'); }
+    if (!sets.length) return res.json({ success: true });
+    params.push(req.params.id, customerId);
+    const r = await query(`UPDATE contacts SET ${sets.join(', ')} WHERE id=$${i++} AND customer_id=$${i}`, params);
+    res.json({ success: true, updated: r.rowCount || 0 });
+  } catch (err) {
+    logger.error('contact edit error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE /api/contacts/:id ──────────────────────────────────────────────────
+router.delete('/contacts/:id', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const r = await query('DELETE FROM contacts WHERE id=$1 AND customer_id=$2', [req.params.id, customerId]);
+    res.json({ success: true, deleted: r.rowCount || 0 });
+  } catch (err) {
+    logger.error('contact delete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/contacts/bulk ───────────────────────────────────────────────────
+// Bulk action on selected contacts. Body: { contactIds:[], action:'delete'|'opt_in'|'opt_out' }.
+router.post('/contacts/bulk', authenticateToken, async (req, res) => {
+  try {
+    const customerId = req.user.customerId || req.user.id;
+    const { contactIds, action } = req.body || {};
+    if (!Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({ error: 'contactIds is required' });
+    }
+    if (action === 'delete') {
+      const ph = contactIds.map((_, idx) => `$${idx + 2}`).join(',');
+      const r = await query(`DELETE FROM contacts WHERE customer_id=$1 AND id IN (${ph})`, [customerId, ...contactIds]);
+      return res.json({ success: true, deleted: r.rowCount || 0 });
+    }
+    if (action === 'opt_in' || action === 'opt_out') {
+      const optedOut = action === 'opt_out';
+      const ph = contactIds.map((_, idx) => `$${idx + 3}`).join(',');
+      const r = await query(
+        `UPDATE contacts SET opted_out=$1, opted_out_at=CASE WHEN $1 THEN NOW() ELSE NULL END
+          WHERE customer_id=$2 AND id IN (${ph})`,
+        [optedOut, customerId, ...contactIds]
+      );
+      return res.json({ success: true, updated: r.rowCount || 0 });
+    }
+    return res.status(400).json({ error: 'Unknown action' });
+  } catch (err) {
+    logger.error('contacts bulk error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── BULK SEND REVIEW REQUESTS ─────────────────────────────────────────────────
 router.post('/review-requests/bulk-send', authenticateToken, async (req, res) => {
   try {
