@@ -7,12 +7,12 @@ const logger = require('../utils/logger');
 
 // The branded survey-invite email. Moved here from routes/index.js so the live
 // send and the scheduler render identical email.
-function surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, link }) {
+function surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, logoAlign, link }) {
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
     '<body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif">' +
     '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px">' +
     '<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">' +
-    '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0">' +
+    '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0;text-align:' + (logoAlign || 'left') + '">' +
     '<img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain"></td></tr>' +
     '<tr><td style="background:#ffffff;padding:36px 32px">' +
     '<h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How was your experience, ' + firstName + '?</h2>' +
@@ -59,6 +59,7 @@ async function runSurveyCampaign({ customerId, segment, templateId, contactEmail
   const tmpl = tmplRes.rows[0]?.config || {};
   const brandColor = tmpl.brandColor || '#f5c842';
   const brandLogo = tmpl.brandLogo || 'https://swarmreply.com/bee-logo.png';
+  const logoAlign = ({ left: 'left', middle: 'center', right: 'right' })[tmpl.brandLogoPosition] || 'left';
 
   // Audience: either a hand-picked list of contacts, or everyone in a segment.
   // Either way, only emailable contacts; opted-out are skipped below.
@@ -110,7 +111,7 @@ async function runSurveyCampaign({ customerId, segment, templateId, contactEmail
       [customerId, rrLoc, t.name || null, email, t.phone || null, token, tId]
     ).catch((e) => logger.warn('survey campaign insert error:', e.message));
     const link = 'https://app.swarmreply.com/review/' + token;
-    const html = surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, link });
+    const html = surveyCampaignEmailHtml({ firstName, businessName, brandColor, brandLogo, logoAlign, link });
     try {
       const { data, error } = await resend.emails.send({
         from: process.env.SMTP_FROM || 'SwarmReply <nick@swarmreply.com>',
