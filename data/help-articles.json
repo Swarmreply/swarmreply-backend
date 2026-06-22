@@ -1,0 +1,674 @@
+[
+  {
+    "id": "pricing",
+    "title": "Pricing & plans — what you’ll pay",
+    "category": "Billing & Plans",
+    "keywords": "pricing price cost how much plan plans fee monthly per location expensive affordable",
+    "text": "Simple, per-location pricing\n\nSwarmReply is priced per location, and every feature is included — no tiers, no add-ons, no setup fees. You only pay for the number of business locations you manage.\n\n1\nLocations 1–2: $99/month each\n\n2\nLocations 3–25: $89/month each\n\n3\nLocations 26–99: $79/month each\n\n4\n100+ locations or an agency? Contact us for Agency pricing.\n\n✓ Annual billing saves you 10%. Switch anytime in Settings → Billing.\n\nNo contracts\n\nThere are no contracts and no cancellation fees. You can add or remove locations whenever you like in Settings → Billing — changes take effect immediately and Stripe prorates the difference on your next invoice.\n\n✓ Quick check — your current plan and monthly total are always shown at the top of Settings → Billing."
+  },
+  {
+    "id": "ai-replies-status",
+    "title": "When are AI Replies available?",
+    "category": "AI Replies",
+    "keywords": "",
+    "text": "AI Replies is rolling out\n\nAI Replies drafts an on-brand response to each new Google review so you don’t have to write them by hand. We’re enabling it across accounts in stages, so it may not be switched on for yours just yet.\n\nWhat you can do today\n\n1\nOpen Settings → AI Replies to see whether it’s active on your account\n\n2\nSet your tone, plus any phrases replies should always or never include — these apply the moment replies start drafting\n\n⚠ AI replies currently post in English. Automatic same-language replies are on the near-term roadmap.\n\nEverything else is fully live\n\nReview requests, surveys, webchat, listings guidance, insights, and AI Visibility all work today — you don’t need to wait on AI Replies to get value from SwarmReply.\n\n✓ Don’t see AI Replies in Settings yet and want early access? Email hello@swarmreply.com."
+  },
+  {
+    "id": "limitations",
+    "title": "What SwarmReply can and can’t do (yet)",
+    "category": "Getting started",
+    "keywords": "limitations limits cant do wont roadmap coming soon not yet unsupported missing feature what does it do",
+    "text": "What’s fully live today\n\nReview requests (email and SMS), NPS surveys, the webchat widget and inbox, Google review monitoring and replies, Insights, AI Visibility monitoring, and direct integrations with Google, Square, HubSpot, Shopify, Mindbody, Calendly, Acuity, Jobber, and Stripe — all live and ready to use.\n\nRolling out / not live yet\n\n1\nListings sync is in development. Today you can keep Google, Apple Maps, and Bing accurate manually — see the Listings Sync guides\n\n2\nNative Zapier isn’t live yet. Direct integrations plus CSV import cover most needs in the meantime\n\n3\nAI Replies is rolling out and currently English-only — see “When are AI Replies available?”\n\nGood to know\n\n4\nReview requests need a valid email or mobile number — landlines, and anyone who replied STOP, can’t be texted (email still works)\n\n5\nSMS sending requires A2P 10DLC registration approval. Until it’s approved, texts are held but email requests go out normally\n\n6\nSwarmReply is a web app — add it to your phone’s home screen; there’s no separate App Store download\n\n⚠ Billing is monthly with no refunds for partial months — if you cancel mid-month you keep access until the period ends.\n\n✓ Need something that isn’t listed here? Email hello@swarmreply.com — we’ll tell you where it stands."
+  },
+  {
+    "id": "welcome",
+    "title": "Welcome to SwarmReply",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "You're in the right place\n\nSwarmReply is your complete AI reputation management platform. This guide walks you through the first things to do so your swarm starts working immediately.\n\n💡 Most customers go from sign-up to first review request in under 15 minutes. No calls, no setup fees, no waiting.\n\nYour first steps\n\n1\nConnect Google Business Profile — This is the most important step. One OAuth click and SwarmReply starts monitoring and replying to your reviews.\n\n2\nSend your first review request — Pick a customer you know had a great experience and send them a request. Most get a response within an hour.\n\n3\nSet up your NPS survey — Add your Google review link so happy customers go straight there after scoring 9 or 10.\n\n4\nAdd the webchat widget to your website — One script tag. Takes 2 minutes. Starts capturing leads immediately.\n\nNeed help?\n\nEmail us at hello@swarmreply.com — we respond to every message."
+  },
+  {
+    "id": "connect-google",
+    "title": "How to connect Google Business Profile",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "What this does\n\nConnecting your Google Business Profile allows SwarmReply to monitor all incoming reviews and post AI-generated replies on your behalf. It uses Google's secure OAuth system — your Google password is never stored by SwarmReply.\n\nStep by step\n\n1\nIn your dashboard, go to Integrations\n\n2\nClick Connect Google Business Profile\n\n3\nA Google login window opens — log in with the Google account that manages your business listing\n\n4\nClick Allow when Google asks for permission\n\n5\nYou'll be redirected back to SwarmReply — your location is now connected\n\n✓ SwarmReply requests read access to your reviews and permission to post replies. It cannot edit your business listing or billing information.\n\nWhich Google account should I use?\n\nUse the Google account that has Owner or Manager access to your Google Business Profile. If you're not sure which one it is, go to business.google.com and check which account you're logged in with.\n\nTroubleshooting\n\nIf the connection fails, the most common reason is that the Google account you logged in with doesn't have access to the Business Profile. Try logging into Google Business Profile directly first to confirm access, then reconnect.\n\n✓ You'll know it worked when Google Business Profile shows Connected on your Integrations page — your latest reviews appear under Reviews within a few minutes."
+  },
+  {
+    "id": "first-review-request",
+    "title": "Sending your first review request",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "The fastest way to get more reviews\n\nReview requests are short, personalised messages sent to customers after a visit or service asking them to leave a review. They work because they ask at the right moment — when the experience is still fresh.\n\n💡 Most businesses get their first new review within an hour of sending their first request. Think of your last happy customer and start there.\n\nSend a single request\n\n1\nGo to Grow → Review Requests\n\n2\nClick + Send Review Request\n\n3\nEnter the customer's name and email or phone number\n\n4\nChoose your review destination (Google, Facebook, or Yelp)\n\n5\nClick Send\n\nSend in bulk\n\nTo send to a list of customers, go to Grow → Import Contacts and upload a CSV file with name, email, and/or phone columns. SwarmReply will import the contacts and you can send to the entire list at once.\n\nChoosing which platform to send to\n\nEach template can be configured to send customers to a specific review platform. Go to Grow → Request Templates to set this per template. If you need Google reviews, set your default to Google. If your Yelp rating needs work, create a separate Yelp template.\n\n✓ You'll know it worked when the request shows a Sent status in Grow, and the customer receives the email or text within a few minutes."
+  },
+  {
+    "id": "embed-webchat",
+    "title": "Adding the webchat widget to your website",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "What the webchat widget does\n\nThe webchat widget adds a chat bubble to your website. When a visitor clicks it, they enter their name and phone number and send a message. You get notified immediately by email and SMS. The conversation continues via text — meaning you capture their contact details before they leave your site.\n\nGet your embed code\n\n1\nGo to Settings → Webchat & AI Agent\n\n2\nScroll to Embed code\n\n3\nClick Copy embed code\n\nAdd it to your website\n\nPaste the script tag just before the closing </body> tag on every page of your website. It looks like this:\n\n<script\nsrc=\"https://swarmreply.com/chat-widget.js\"\ndata-token=\"your-token-here\"\n></script>\n\n✓ The widget loads asynchronously — it won't slow down your website.\n\nOn WordPress\n\nInstall the Insert Headers and Footers plugin, paste the code in the Footer Scripts section, and save. The widget appears on every page automatically.\n\nOn Squarespace\n\nGo to Settings → Advanced → Code Injection. Paste the code in the Footer section and save.\n\nOn Wix\n\nGo to Settings → Advanced → Custom Code. Add the code to the body section and apply to all pages.\n\n✓ You'll know it worked when the chat bubble appears in the corner of your live site (hard-refresh first). Send yourself a test message — it should land in your inbox and ping you by email and SMS."
+  },
+  {
+    "id": "sms-campaign",
+    "title": "Creating your first SMS campaign",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "What SMS campaigns are for\n\nSMS campaigns let you send a text message to your entire contact list or a targeted segment — for promotions, seasonal offers, win-back messages, or event announcements. Response rates for SMS are typically 5–10x higher than email.\n\n⚠ Only send to customers who have given you their phone number and a reasonable expectation of receiving texts from your business. See our TCPA compliance guide for details.\n\nCreate a campaign\n\n1\nGo to Campaigns in the sidebar\n\n2\nClick + New Campaign\n\n3\nEnter a campaign name (internal only — customers don't see this)\n\n4\nWrite your message — max 160 characters. Use [name] to personalise with the recipient's first name\n\n5\nChoose your audience: All contacts, by tag, or a saved segment\n\n6\nChoose Send now or schedule for a specific date and time\n\n7\nReview the preview and recipient count, then click Send campaign\n\nMonthly SMS limits\n\nYour account includes a monthly campaign SMS allowance. Your remaining balance is shown at the top of the Campaigns page and in the campaign composer, and it resets on the 1st of each month.\n\n💡 Best practice: always end your message with \"Reply STOP to unsubscribe.\" SwarmReply handles STOP replies automatically."
+  },
+  {
+    "id": "billing-faq",
+    "title": "Billing FAQ",
+    "category": "Billing & Plans",
+    "keywords": "",
+    "text": "When am I charged?\n\nYou are charged on the same date each month — the date you first subscribed. If you signed up on the 15th, you are billed on the 15th of every month.\n\nCan I cancel anytime?\n\nYes. There are no contracts and no cancellation fees. Go to Settings → Billing → Cancel subscription. You keep full access until the end of your current billing period.\n\nHow do I update my payment method?\n\nGo to Settings → Billing → Manage billing. This opens the Stripe billing portal where you can update your card securely.\n\nHow is pricing structured?\n\nSwarmReply is priced per location: your first two locations are $99/month each, locations 3–25 are $89/month each, and 26–99 are $79/month each — everything included, with no tiers or add-ons. To add or remove locations, go to Settings → Billing; changes take effect immediately and Stripe prorates the difference on your next invoice.\n\nDo you offer refunds?\n\nWe don't issue refunds for partial months. If you cancel mid-month, you keep access until the end of the period. If you have an exceptional situation, email hello@swarmreply.com and we'll review it.\n\nWhere are my invoices?\n\nGo to Settings → Billing and scroll to Invoice history. All invoices have a PDF download link and a hosted invoice page. You can also access them directly via the Stripe billing portal.\n\nWhat happens to my data if I cancel?\n\nYour data is kept after you cancel, so if you reactivate, everything is exactly as you left it. Prefer to have your data permanently deleted? Email us and we'll take care of it."
+  },
+  {
+    "id": "llm-overview",
+    "title": "Understanding AI Visibility Monitoring",
+    "category": "AI Visibility",
+    "keywords": "",
+    "text": "What is AI Visibility Monitoring?\n\nWhen someone asks ChatGPT, Gemini, or Claude \"best Italian restaurant in Sacramento\" — does your business appear in the answer? AI Visibility Monitoring tracks this for you. Every week, SwarmReply queries major AI models with discovery questions about your business and your category, then scores and reports how often you appear and how positively you are described.\n\nYour visibility score\n\nThe visibility score (0–100) represents the percentage of queries where your business was mentioned across all AI models monitored. A score of 73 means your business appeared in 73% of all queries run that week. The score is compared to the previous week so you can see if you are trending up or down.\n\nWhich AI models are monitored?\n\nSwarmReply monitors the three assistants your customers actually use — ChatGPT, Gemini, and Claude — every week. There's nothing to wire up: the scans run on your behalf, with no API keys to provide.\n\nWhat queries are run?\n\nThe Setup Wizard auto-generates a starting set of queries from your business name, type, and city — a mix of discovery queries (\"best restaurants in Sacramento\"), direct brand queries (\"tell me about Bella's Kitchen\"), and comparison queries. You can edit those or add your own — up to 15 queries in total — under Get Found → AI Visibility → ⚙ My Queries.\n\nHow do I improve my score?\n\nAI models pull from Google ratings and review volume, Google Business Profile completeness, platform listings across the web, and how often your business name appears in credible online sources. The four most impactful things you can do: keep generating Google reviews, publish Google Posts weekly, keep your listings synced across all platforms, and use your business name and city consistently everywhere.\n\n✓ The AI Visibility page includes a built-in improvement guide tailored to your specific score and missed queries."
+  },
+  {
+    "id": "connect-square",
+    "title": "Connecting Square",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this integration does\n\nWhen a customer completes a payment in Square, SwarmReply automatically sends them a review request 60 minutes later. Works for restaurants, salons, retail stores, and any business using Square as their point of sale.\n\n✓ SwarmReply requests read-only access to your Square payments and customer profiles. It cannot process refunds or modify transactions.\n\nHow to connect Square\n\n1\nIn your dashboard, go to Integrations\n\n2\nClick Connect → next to Square\n\n3\nYou'll be redirected to Square — log in with your Square account\n\n4\nClick Allow to grant SwarmReply read access\n\n5\nYou'll be redirected back to SwarmReply — Square is now connected\n\nConfiguring the delay\n\nBy default SwarmReply waits 60 minutes after a completed payment before sending a review request. To change this, go to Integrations → Square → Settings and adjust the delay. We recommend 30–120 minutes for most businesses.\n\nWhat customer info is used?\n\nSwarmReply fetches the customer's name, email, and phone from their Square customer profile (if available). If the customer has no profile attached to the transaction, no request is sent.\n\n⚠ Make sure your review request template is set up and connected to a platform before enabling the Square integration.\n\n✓ You'll know it worked when Square shows Connected on your Integrations page — the next Square payment sends a review request about 60 minutes later."
+  },
+  {
+    "id": "connect-hubspot",
+    "title": "Connecting HubSpot CRM",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this integration does\n\nWhen a deal is marked Closed Won in HubSpot, SwarmReply automatically sends a review request to the associated contact 30 minutes later. This is ideal for service businesses, agencies, and any B2B or B2C company using HubSpot to manage their sales pipeline.\n\nHow to connect HubSpot\n\n1\nGo to Integrations\n\n2\nClick Connect → next to HubSpot CRM\n\n3\nYou'll be redirected to HubSpot — log in and choose your portal\n\n4\nGrant SwarmReply access to CRM contacts and deals — click Connect app\n\n5\nYou'll be redirected back to SwarmReply — the integration is live\n\nWhich deals trigger a request?\n\nOnly deals moved to the Closed Won stage trigger a review request. Closed Lost, Open, and all other stages are ignored.\n\nWhat contact details are used?\n\nSwarmReply looks up the contacts associated with the closed deal and uses their email address and phone number from HubSpot. If the deal has no associated contacts, no request is sent.\n\n✓ SwarmReply requests read-only access to your HubSpot CRM. It cannot create, modify, or delete contacts or deals.\n\n✓ You'll know it worked when HubSpot shows Connected on your Integrations page — the next deal you mark Closed Won sends a request about 30 minutes later."
+  },
+  {
+    "id": "connect-shopify",
+    "title": "Connecting Shopify",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this integration does\n\nWhen an order is fulfilled in Shopify, SwarmReply sends the customer a review request 2 hours later. This gives them time to receive their order confirmation before being asked for a review.\n\nHow to connect Shopify\n\n1\nGo to Integrations\n\n2\nClick Connect → next to Shopify\n\n3\nEnter your Shopify store URL — it looks like yourstore.myshopify.com\n\n4\nYou'll be redirected to your Shopify store — click Install app\n\n5\nYou'll be redirected back to SwarmReply — Shopify is now connected\n\nWhen is the request sent?\n\nThe request fires when Shopify sends a orders/fulfilled webhook — meaning when the order status changes to Fulfilled (typically when a tracking number is added). The default delay is 2 hours after fulfilment.\n\n⚠ Shopify requires your store URL in the exact format yourstore.myshopify.com — not your custom domain.\n\n✓ You'll know it worked when Shopify shows Connected on your Integrations page — the next fulfilled order sends a request about 2 hours later."
+  },
+  {
+    "id": "connect-mindbody",
+    "title": "Connecting Mindbody",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this integration does\n\nWhen a client completes an appointment or class visit in Mindbody, SwarmReply sends them a review request 60 minutes later. Ideal for yoga studios, gyms, spas, salons, and wellness businesses.\n\nWhat you need before connecting\n\n• Your Mindbody Site ID (a number found in your Mindbody admin URL)\n\n• A Mindbody staff account with API access (username and password)\n\nFinding your Site ID\n\nLog into Mindbody. In your browser address bar, look for the number after /POSHomePage?studioid= — that's your Site ID. It's usually a 5–6 digit number.\n\nHow to connect Mindbody\n\n1\nGo to Integrations\n\n2\nClick Connect → next to Mindbody\n\n3\nEnter your Site ID, staff username, and staff password\n\n4\nClick Connect — SwarmReply validates your credentials and configures the webhook\n\n✓ SwarmReply uses your credentials to authenticate with the Mindbody API on your behalf. Your password is encrypted before storage.\n\n⚠ Mindbody webhooks require your business to have an active Mindbody subscription that includes API access. Contact Mindbody support if you need to enable this."
+  },
+  {
+    "id": "connect-calendly",
+    "title": "Connecting Calendly",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this integration does\n\nWhen an invitee books an appointment through your Calendly link, SwarmReply sends them a review request at the time of booking (no delay by default). You can configure a delay in Settings if you prefer to wait until after the appointment.\n\n⚠ By default the request fires when the appointment is booked, not when it occurs. If you want to send after the appointment, add a delay equal to the typical appointment length + a few hours.\n\nHow to connect Calendly\n\n1\nGo to Integrations\n\n2\nClick Connect → next to Calendly\n\n3\nYou'll be redirected to Calendly — log in with your Calendly account\n\n4\nClick Allow access\n\n5\nYou'll be redirected back to SwarmReply — Calendly is live\n\nConfiguring a delay\n\nGo to Integrations → Calendly → Settings. Set the delay in minutes. For a 60-minute appointment that you want to follow up after, set the delay to 120 minutes (60 min for the appointment + 60 min after).\n\n✓ SwarmReply uses the name and email from the Calendly invitee form automatically.\n\n✓ You'll know it worked when Calendly shows Connected on your Integrations page — your next booking triggers a request (after any delay you set)."
+  },
+  {
+    "id": "connect-acuity",
+    "title": "Connecting Acuity Scheduling",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this integration does\n\nWhen an appointment is scheduled in Acuity, SwarmReply sends a review request 24 hours later — giving the appointment time to occur before the request is sent.\n\nWhat you need\n\n• Your Acuity User ID\n\n• Your Acuity API Key\n\nFinding your User ID and API Key\n\n1\nLog into your Acuity account at acuityscheduling.com\n\n2\nGo to Business Settings → Integrations → API\n\n3\nYour User ID and API Key are both listed there\n\nHow to connect Acuity\n\n1\nGo to Integrations in your SwarmReply dashboard\n\n2\nClick Connect → next to Acuity Scheduling\n\n3\nEnter your User ID and API Key\n\n4\nClick Connect — SwarmReply validates your credentials and registers the webhook\n\n✓ Your Acuity API Key is encrypted before being stored. It is never visible after saving.\n\n✓ You'll know it worked when Acuity shows Connected on your Integrations page — new appointments then send a request 24 hours later."
+  },
+  {
+    "id": "connect-stripe-trigger",
+    "title": "Setting up the Stripe payment trigger",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this does\n\nSince you already use Stripe to pay for SwarmReply, you can optionally enable a review request trigger that fires every time one of your customers pays you via Stripe. No additional OAuth connection is needed — SwarmReply already has the relationship.\n\n⚠ This only works if you are using Stripe to charge your own customers — for example, if you run a service business that invoices through Stripe.\n\nHow to enable\n\n1\nGo to Integrations\n\n2\nFind Stripe Payment Trigger and click Connect →\n\n3\nSet your delay (default is 60 minutes) and choose your review request template\n\n4\nClick Enable\n\nWhen does the trigger fire?\n\nThe trigger fires when a Stripe invoice.payment_succeeded event is received — meaning a successful charge processed through Stripe. The customer's email and name are pulled from the Stripe charge billing details.\n\n✓ If the customer has no email attached to their Stripe charge, no review request is sent."
+  },
+  {
+    "id": "zapier-setup",
+    "title": "Zapier integration",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What Zapier is\n\nZapier is a tool that connects the apps you already use and moves information between them automatically — no code required. You build a \"Zap\": when something happens in one app (a trigger), Zapier performs an action in another. Because it connects to thousands of apps, it's become the universal glue for workflows that don't have a direct, native integration.\n\nWhy it can be valuable\n\nFor a local business, a Zap removes the copy-paste busywork between your tools and makes things happen the moment they should. A few examples of what people automate:\n\n→\nA new 5-star review in SwarmReply posts automatically to your team's Slack channel or a Google Sheet\n\n→\nA new customer in a booking or POS app you use becomes a SwarmReply contact, ready for a review request\n\n→\nA form submission on your website kicks off a SwarmReply review request a few days later\n\nThe real value is reach: Zapier covers the long tail of niche apps that no platform integrates with one by one.\n\nWhere SwarmReply stands today\n\nA native Zapier integration — with SwarmReply triggers like \"new review\" and actions like \"send review request\" — is on our roadmap, but it isn't live yet. We'd rather ship it properly than half-built.\n\nWhat already covers most of this\n\nMost of what owners reach for Zapier to build, SwarmReply does natively today:\n\n1\nJobber and the Stripe payment trigger fire review requests automatically when a job is completed or a payment clears\n\n2\nSquare, HubSpot, Shopify, Mindbody, Calendly, and Acuity sync your customer data in, so contacts are ready to go\n\n3\nCSV import brings any list of customers in bulk, from any system\n\n💡 Have a workflow these don't cover? Email hello@swarmreply.com and tell us which apps you'd connect — real requests decide what we integrate next, including where Zapier lands on the list."
+  },
+  {
+    "id": "csv-import",
+    "title": "Importing contacts via CSV",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "When to use CSV import\n\nUse CSV import when you want to upload a list of existing customers from your PMS, CRM, booking software, or any spreadsheet. This is the fastest way to send review requests to your existing customer base.\n\nRequired CSV format\n\nYour CSV file must have a header row with at least one of these columns:\n\n• name (or first_name + last_name)\n\n• email\n\n• phone (for SMS requests)\n\nExample header row: name,email,phone\n\nHow to import\n\n1\nGo to Grow → Import Contacts\n\n2\nClick Upload CSV and select your file\n\n3\nMap your CSV columns to the SwarmReply fields\n\n4\nPreview the first 5 rows and confirm\n\n5\nChoose whether to send review requests immediately or save contacts for later\n\n✓ SwarmReply automatically deduplicates contacts — if the same email or phone already exists, it won't create a duplicate.\n\n⚠ Maximum file size is 10MB. For files larger than this, split into multiple imports."
+  },
+  {
+    "id": "api-key",
+    "title": "Does SwarmReply have an API?",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "The honest answer: not a public API yet\n\nSwarmReply doesn't offer public API keys for custom integrations today. It's planned — the API section in Settings will light up when it ships — but we'd rather point you to what genuinely works now than hand you a half-finished endpoint.\n\nWhat covers most needs today\n\nMost of the reasons people ask for an API are already handled without one:\n\n1\nAutomate review requests — Jobber and the Stripe payment trigger fire requests automatically, no code needed\n\n2\nBring customers in — native connections to Square, HubSpot, Shopify, Mindbody, Calendly, and Acuity, plus CSV import for any other source\n\n3\nEmbed on your site — the Rep Widget shows off your best reviews and webchat captures leads, each with a simple copy-paste snippet\n\nBuilding something custom?\n\nIf you have a use case these don't cover and you specifically need programmatic access, we want to hear it — early API partners help shape what we build first.\n\n💡 Email hello@swarmreply.com with what you're trying to build and we'll point you to the best way to do it today — and flag you the moment the API is ready."
+  },
+  {
+    "id": "invite-team",
+    "title": "Inviting team members",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "Roles and permissions\n\nSwarmReply has three team roles:\n\nAdmin — Full access including billing, team management, and all settings. Typically the business owner or account holder.\n\nManager — Full operational access — reviews, inbox, campaigns, analytics. Cannot access billing or invite team members.\n\nStaff — Can view and act on reviews, manage the inbox, send review requests, and view basic analytics. Cannot access billing, campaigns, or settings.\n\nHow to invite someone\n\n1\nGo to Settings → Team\n\n2\nClick Invite team member\n\n3\nEnter their email address and choose their role\n\n4\nClick Send invite — they'll receive an email with a link to set their password\n\n✓ Invite links expire after 7 days. If a team member hasn't accepted, go to Settings → Team and resend the invite.\n\nRemoving a team member\n\nGo to Settings → Team, click the three dots next to the team member, and select Remove. Their access is revoked immediately. Only Admins can remove team members.\n\n✓ You'll know it worked when the person appears in Settings → Team as Pending — they switch to Active once they accept the email invite."
+  },
+  {
+    "id": "onboarding-checklist",
+    "title": "Onboarding checklist",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "Your SwarmReply setup checklist\n\n1\nConnect Google Business Profile — Integrations → Connect Google. Takes 30 seconds.\n\n2\nAdd your Google review link — Settings → Review Links → paste your Google review URL.\n\n3\nSend your first review request — Grow → Review Requests → + Send Review Request.\n\n4\nSet up your NPS survey — Grow → Surveys & NPS → configure and enable.\n\n5\nAdd the webchat widget — Settings → Webchat & AI Agent → copy and paste the embed code onto your website.\n\n6\nInvite your team — Settings → Team → Invite team member.\n\n8\nConnect an integration — Integrations → choose Square, HubSpot, Calendly, or another platform you use.\n\n✓ Most businesses complete all 8 steps in under 30 minutes. Steps 1–4 are the most impactful — start there."
+  },
+  {
+    "id": "account-settings",
+    "title": "Account settings overview",
+    "category": "Settings",
+    "keywords": "",
+    "text": "What you can configure in Settings\n\nAI Replies — Reply tone, \"always include\" and \"never mention\" rules, and approval mode for automatic review replies.\n\nWebchat & AI Agent — Widget appearance, the AI agent, your knowledge base, business hours, and notification settings.\n\nSocial Posting Accounts — Connect Facebook, Instagram, LinkedIn, Google Business, and TikTok for social posting.\n\nReview Links — Your Google, Yelp, and Facebook review URLs per location, used by request templates and surveys.\n\nRep Widget — Configure and copy the embeddable reviews widget for your website.\n\nSetup Wizard — Your guided setup, including the queries used for AI visibility.\n\nAccount — Business info (name, address, phone, website, industry) and your alert preferences.\n\nTeam — Invite, manage, and remove team members and view their roles.\n\nBilling — Manage your subscription and locations, update your payment method, and download invoices.\n\nConnecting tools like Jobber, Square, HubSpot, and Calendly lives on the top-level Integrations page, not in Settings."
+  },
+  {
+    "id": "alert-preferences",
+    "title": "Setting your alert preferences",
+    "category": "Settings",
+    "keywords": "",
+    "text": "What triggers an alert\n\nSwarmReply can alert you by email or SMS when any of the following happen:\n\n• A new review arrives (you can filter by star rating — e.g. only 1 and 2 star reviews)\n\n• A new webchat conversation starts\n\n• Your Google Business Profile connection breaks\n\n• A new NPS response comes in with a low score\n\n• A review request is opened or a review is left after a request\n\nHow to configure alerts\n\n1\nGo to Settings → Account and scroll to Alert preferences\n\n2\nToggle each alert type on or off\n\n3\nSet the email address and/or phone number for each alert type\n\n4\nClick Save\n\n✓ We recommend keeping negative review alerts (1–2 stars) on at all times so you can respond quickly."
+  },
+  {
+    "id": "locations",
+    "title": "Managing multiple locations",
+    "category": "Settings",
+    "keywords": "",
+    "text": "How multi-location works\n\nEach location in SwarmReply has its own Google Business Profile connection, review queue, webchat widget, and analytics. You switch between locations using the location picker in the top bar.\n\nAdding a new location\n\n1\nGo to Settings → Billing and increase your location count — pricing updates automatically (see below)\n\n2\nConnect the new location's Google Business Profile from the Integrations page\n\n3\nSet that location's review links, AI tone, and settings independently — use the location picker in the top bar to switch between them\n\nPricing for additional locations\n\nYour first two locations are $99/month each. Additional locations are charged at $89/month each for locations 3–25, and $79/month each for locations 26–99. At 100+ locations, contact us for Agency pricing.\n\nGo to Settings → Billing to see your current location count and adjust your plan.\n\n✓ All locations share one login and one dashboard. You don't need separate accounts for each location."
+  },
+  {
+    "id": "upgrade-plan",
+    "title": "Adding locations to your plan",
+    "category": "Billing & Plans",
+    "keywords": "",
+    "text": "How to add more locations\n\n1\nGo to Settings → Billing\n\n2\nUse the location slider to select your new total number of locations\n\n3\nReview the updated monthly cost and breakdown\n\n4\nClick Update plan\n\n✓ Changes take effect immediately. Stripe prorates the difference — you only pay for the days remaining in your current billing period.\n\nPricing breakdown\n\nLocations 1–2: $99/mo each · Locations 3–25: $89/mo each · Locations 26–99: $79/mo each · 100+: contact sales for Agency pricing.\n\nAnnual billing gives you 10% off — switch in Settings → Billing."
+  },
+  {
+    "id": "cancel",
+    "title": "Cancelling your subscription",
+    "category": "Billing & Plans",
+    "keywords": "",
+    "text": "How to cancel\n\n1\nGo to Settings → Billing\n\n2\nScroll to Danger zone\n\n3\nClick Cancel subscription\n\n4\nChoose a cancellation reason and confirm\n\nWhat happens after you cancel\n\nYou keep full access to SwarmReply until the end of your current billing period. After that, your automatic replies, review requests, and scans stop. Your data stays saved so you can pick up right where you left off if you reactivate — or request permanent deletion anytime by emailing us.\n\n💡 Before you cancel, email us at hello@swarmreply.com — most concerns that lead to cancellation can be solved quickly.\n\nReactivating after cancellation\n\nGo to swarmreply.com/signup and sign up again with the same email address. If you reactivate within 30 days, your data will be restored automatically."
+  },
+  {
+    "id": "update-card",
+    "title": "Updating your payment method",
+    "category": "Billing & Plans",
+    "keywords": "",
+    "text": "How to update your card\n\n1\nGo to Settings → Billing\n\n2\nClick Manage billing → in the top right\n\n3\nThe Stripe billing portal opens — click Update payment method\n\n4\nEnter your new card details and save\n\n✓ SwarmReply never stores your card details — all payments are handled securely by Stripe, which is PCI DSS Level 1 certified."
+  },
+  {
+    "id": "invoices",
+    "title": "Viewing and downloading invoices",
+    "category": "Billing & Plans",
+    "keywords": "",
+    "text": "Finding your invoices\n\nGo to Settings → Billing and scroll to Invoice history. Every invoice is listed with its date, period, amount, and status. Click PDF to download.\n\nYou can also access all invoices through the Stripe billing portal — click Manage billing → in the Billing page header.\n\n✓ Invoices are automatically emailed to the billing email on your account after each successful charge."
+  },
+  {
+    "id": "import-contacts",
+    "title": "Importing contacts from CSV",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "What this is for\n\nImporting your customer list lets you send review requests in bulk instead of one at a time. Once imported, your contacts appear in Grow → Bulk Send ready to receive a request.\n\nStep by step\n\n1\nIn your dashboard, go to Grow → Import Contacts\n\n2\nExport your customer list from your CRM, booking system, or spreadsheet as a .csv file\n\n3\nUpload the file — SwarmReply reads it in your browser and shows you a preview before anything is saved\n\n4\nMatch the columns to name, email, and phone, then confirm the import\n\n💡 Email is needed for email requests and phone for SMS requests — include both columns when you can so you're free to use either channel.\n\nAfter importing\n\nHead to Grow → Bulk Send to send review requests to your imported contacts, or send to individuals from Grow → Review Requests.\n\n✓ You'll know it worked when your contacts appear in Grow → Bulk Send with their names, emails, and phone numbers filled in."
+  },
+  {
+    "id": "review-platforms",
+    "title": "Choosing your review platform",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "Where should your reviews go?\n\nSwarmReply can send customers to Google, Yelp, or Facebook. Which buttons your customers see is controlled by the review links you've saved in Settings → Review Links.\n\nOur recommendation: Google first\n\nFor most local businesses, Google reviews matter most. They power your Google Business Profile rating, influence local search ranking, and are what most customers check before calling you. If you only set up one platform, make it Google.\n\nWhen to add Yelp and Facebook\n\nAdd Yelp if your industry lives there (restaurants, home services, beauty) and Facebook if your customers already engage with your page. Once you paste those links into Settings → Review Links, they automatically appear as options in your request templates and on the thank-you screen your survey promoters see.\n\n✓ You can offer all three at once — customers simply pick the platform they already have an account on, which removes friction and gets you more reviews."
+  },
+  {
+    "id": "sms-requests",
+    "title": "Sending review requests via SMS",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "Email or text — your choice\n\nEvery request template has a channel: email or SMS. Text messages get opened faster — most are read within minutes — which makes SMS a great choice when you ask right after the service.\n\nSetting up an SMS request\n\n1\nGo to Grow → Request Templates and create a new template\n\n2\nChoose SMS as the channel\n\n3\nWrite a short message — your review link is added automatically\n\n4\nSend a test to yourself from the builder before using it live\n\n⚠️ Keep SMS requests short and always identify your business by name. Your contact must have a phone number on file, and texting customers requires their consent — see our TCPA compliance guide.\n\nSending\n\nPick the SMS template when sending from Review Requests or Bulk Send — everything else works exactly like email requests."
+  },
+  {
+    "id": "template-customise",
+    "title": "Customising review request templates",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "The template builder\n\nGrow → Request Templates is a side-by-side builder: your settings on the left, a live preview of exactly what your customer receives on the right.\n\nWhat you can customise\n\n1\nChannel — email or SMS\n\n2\nMessage — the subject and body, written in your voice\n\n3\nBrand color & logo — pick your brand color and add a logo URL so the request looks like it came from you, not from software\n\n4\nReview platforms — choose which buttons appear (Google, Yelp, Facebook), pulled from your saved review links\n\nTest before you send\n\nUse the test send to deliver the request to your own inbox or phone. What you receive is exactly what customers get.\n\n💡 Short, personal messages win. Two sentences thanking them and asking for a minute of their time will outperform a long pitch every time."
+  },
+  {
+    "id": "review-widget",
+    "title": "Setting up the review widget",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "Show your reviews on your own website\n\nThe Rep Widget displays your star rating and recent reviews directly on your website — social proof exactly where new customers are deciding whether to contact you.\n\nStep by step\n\n1\nGo to Settings → Rep Widget\n\n2\nChoose how you want it to look for your site\n\n3\nCopy the embed snippet and paste it into your website where you want reviews to appear — it works on WordPress, Squarespace, Wix, Shopify, and plain HTML sites\n\n✓ The widget updates automatically as new reviews come in — set it once and forget it.\n\nWhere to place it\n\nThe homepage and any page where customers make a decision (pricing, booking, contact) are the highest-impact spots.\n\n✓ You'll know it worked when your star rating and recent reviews appear on your site where you pasted the snippet (hard-refresh first)."
+  },
+  {
+    "id": "request-timing",
+    "title": "When to send review requests",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "Timing is everything\n\nThe single biggest factor in whether a customer leaves a review is how soon you ask after the experience. Ask within a few hours and the experience is fresh; ask a week later and most people have moved on.\n\nThe best windows\n\n1\nSame day as the service — ideal for home services, salons, repairs, and appointments\n\n2\nRight after payment — the natural \"transaction complete\" moment\n\n3\nAfter a positive interaction — a compliment in person or a 9–10 survey score is a green light\n\nAutomate the timing entirely\n\nConnect Jobber (request sent automatically when a job is marked complete) or the Stripe payment trigger (request sent after a successful payment) from the Integrations page, and the right moment is never missed.\n\n💡 Send during business hours — mid-morning and early evening perform best. Avoid late nights, especially for SMS."
+  },
+  {
+    "id": "bulk-send",
+    "title": "Sending review requests in bulk",
+    "category": "Review Generation",
+    "keywords": "",
+    "text": "One send, your whole list\n\nGrow → Bulk Send lets you send a review request to many customers at once — perfect for working through a backlog of past customers or a batch you just imported.\n\nStep by step\n\n1\nImport your customers first via Grow → Import Contacts (CSV with name, email, phone)\n\n2\nOpen Grow → Bulk Send and select the contacts to include\n\n3\nChoose the request template to use (email or SMS)\n\n4\nSend — each contact gets their own personal review link, and delivery status is tracked per contact\n\n⚠️ Only send to customers who actually used your business. Review platforms penalise review gating and bulk solicitation of strangers — and texting requires consent.\n\n💡 Working through old customers? Batch by recency — last month's customers first, then go further back. Recent experiences convert far better."
+  },
+  {
+    "id": "survey-setup",
+    "title": "Setting up your NPS survey",
+    "category": "Surveys & NPS",
+    "keywords": "",
+    "text": "What the survey does\n\nYour NPS survey asks customers one question — \"How likely are you to recommend us?\" on a 0–10 scale — and then invites every customer to leave a public review, while also giving unhappy ones a private channel to flag problems first.\n\nStep by step\n\n1\nGo to Grow → Surveys & NPS\n\n2\nCustomise the messages — the thank-you shown to promoters, and the two follow-up questions detractors are asked\n\n3\nMake sure your review links are saved in Settings → Review Links — that's where 9s and 10s get sent\n\n4\nSend it — every review request includes a personal survey link for each customer\n\n✓ By default, 9–10 counts as a promoter, 7–8 as passive, and 0–6 as a detractor — the standard NPS bands.\n\n✓ You'll know it worked when you open your own survey link, enter a 9 or 10, and it sends you straight to your Google review page."
+  },
+  {
+    "id": "nps-routing",
+    "title": "How NPS routing works",
+    "category": "Surveys & NPS",
+    "keywords": "",
+    "text": "One score, three paths\n\nWhen a customer taps a score on your survey, SwarmReply routes them automatically:\n\n9–10\nPromoters see your thank-you message and buttons to leave a review on Google, Yelp, or Facebook (whichever links you've saved)\n\n7–8\nPassives get a simple thank-you — they're satisfied but not enthusiastic, so we don't push them to review\n\n0–6\nDetractors are asked two private follow-up questions first, then are also invited to leave a public review\n\nWhy this matters\n\nThis is how you grow your public rating ethically: everyone gets the same survey, every customer is invited to share publicly, and unhappy customers also get a private channel to reach you first — giving you the chance to make things right."
+  },
+  {
+    "id": "promoter-destination",
+    "title": "Setting your promoter destination",
+    "category": "Surveys & NPS",
+    "keywords": "",
+    "text": "Where your review links come from\n\nEvery customer who's invited to leave a review sees buttons inviting them to share their experience publicly. Those buttons come straight from Settings → Review Links.\n\nStep by step\n\n1\nGo to Settings → Review Links\n\n2\nPaste your Google review link — and optionally your Yelp and Facebook review page links\n\n3\nSave — customers now see a button for each link you've added\n\n💡 To get your Google review link: search your business on Google, open your Business Profile, click \"Ask for reviews\", and copy the short link Google gives you.\n\nIf you serve multiple locations, each location keeps its own links, so customers always land on the right listing."
+  },
+  {
+    "id": "survey-link",
+    "title": "Sharing your survey link",
+    "category": "Surveys & NPS",
+    "keywords": "",
+    "text": "Every customer gets a personal link\n\nWhen you send a review request, SwarmReply generates a unique survey link for that customer (it looks like …/review/abc123). The link identifies them, records their score once, and routes them to the right follow-up.\n\nWays to get the link in front of customers\n\n1\nReview requests — every email or SMS request includes the customer's personal link automatically\n\n2\nBulk Send — each contact in the batch gets their own unique link\n\n3\nAutomations — Jobber and Stripe triggers send the link at exactly the right moment without you lifting a finger\n\n✓ Because each link is unique, your results stay clean: one customer, one response, tied to a real interaction."
+  },
+  {
+    "id": "detractor-handling",
+    "title": "Handling detractor responses",
+    "category": "Surveys & NPS",
+    "keywords": "",
+    "text": "A detractor is a gift (really)\n\nA customer who scores you 0–6 was probably going to tell someone about their bad experience — the survey makes sure they tell you first, privately, so you can make it right.\n\nWhat detractors see\n\nAfter scoring, a detractor sees whatever follow-up questions you've put on the detractor path of your survey (by default: what fell short, and what you'd do better). Then — exactly like every respondent, whatever their score — they're shown a neutral invitation to leave a public review. Reviews are never gated on sentiment: the same option appears for promoters, passives, and detractors alike, and every answer is saved with the response.\n\nWhere detractor feedback shows up\n\nYou don't have to go hunting for it. When an unhappy response comes in, it lands on your Home dashboard's action queue — showing the customer's name, their score, and a preview of what they actually wrote. From there, click through to Reports → Responses (pre-filtered to detractors) to read every answer, or open Reports → NPS & loyalty to see the reasons and per-question results across all your detractors at once.\n\nWhat to do when one comes in\n\n1\nRespond fast and personally — a same-day call or email from the owner defuses most situations\n\n2\nFix what you can — a refund, redo, or sincere apology often turns a detractor into a loyal customer\n\n3\nLook for patterns — if three detractors mention the same thing, that's an operations issue, not a one-off\n\n💡 Turn on negative-feedback alerts in Settings → Account so detractor responses reach your inbox the moment they happen."
+  },
+  {
+    "id": "webchat-setup",
+    "title": "Webchat appearance settings",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "Make the chat yours\n\nOnce the widget is on your site (see Adding the webchat widget to your website), customise how it greets visitors in Settings → Webchat & AI Agent.\n\nWhat you can set\n\n1\nGreeting title — the headline visitors see when the chat opens\n\n2\nWelcome message — the first message in the conversation, written in your voice\n\n3\nBusiness hours — so visitor expectations match when you can actually reply\n\n💡 A specific welcome message (\"Hi! Ask us about availability, pricing, or anything else\") starts far more conversations than a generic \"How can we help?\"\n\nChanges apply to the live widget as soon as you save — no need to touch the code on your website again."
+  },
+  {
+    "id": "ai-agent-setup",
+    "title": "Setting up the AI chat agent",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "Your 24/7 first responder\n\nThe AI agent answers webchat visitors instantly using the knowledge base you give it — capturing leads at 9pm on a Sunday when you'd otherwise miss them.\n\nStep by step\n\n1\nGo to Settings → Webchat & AI Agent\n\n2\nTurn the AI agent on\n\n3\nFill in your knowledge base — services, pricing, hours, service area, FAQs (see the knowledge base guide)\n\n4\nTest it on your own site: ask the questions your customers actually ask and refine the knowledge base until the answers sound right\n\n✓ When the agent can't answer confidently or the visitor asks for a person, it hands the conversation to you and notifies you — it never bluffs on your behalf."
+  },
+  {
+    "id": "knowledge-base",
+    "title": "Building your AI knowledge base",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "The agent only knows what you tell it\n\nThe knowledge base in Settings → Webchat & AI Agent is the AI agent's only source of truth about your business. The better it is, the more conversations the agent can finish without you.\n\nWhat to include\n\n1\nServices & pricing — what you do, what it costs (even ranges help: \"Most jobs run $150–$400\")\n\n2\nHours & service area — when you're open and where you go\n\n3\nYour top 10 FAQs — the questions you answer on the phone every week\n\n4\nBooking process — how a visitor becomes a customer\n\n⚠️ Keep it current. If your prices or hours change, update the knowledge base the same day — the agent will keep confidently giving the old answer until you do."
+  },
+  {
+    "id": "handoff",
+    "title": "How handoffs work",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "AI first, humans when it matters\n\nThe AI agent handles the routine questions. When a conversation needs a person, it hands off — and you take over in your Messages inbox.\n\nWhen a handoff happens\n\n1\nThe visitor asks for a human\n\n2\nThe agent isn't confident it can answer correctly\n\n3\nThe conversation involves something only you can decide — a custom quote, a complaint, a scheduling change\n\nWhat happens next\n\nYou're notified (email, SMS, or both — your choice in webchat settings), the conversation is flagged in Messages, and every handoff is logged so you can review where the agent needed help — which is also your to-do list for improving the knowledge base."
+  },
+  {
+    "id": "inbox-manage",
+    "title": "Managing your inbox",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "Every conversation in one place\n\nMessages in your dashboard sidebar is where all webchat conversations live — the ones the AI handled, the ones handed off to you, and everything in between.\n\nWorking the inbox\n\n1\nFilter by open to see conversations waiting on you\n\n2\nClick a conversation to read the full history — including what the AI agent already said\n\n3\nReply right in the thread — the visitor sees it in the chat widget (or by text if the SMS bridge is on)\n\n💡 Speed wins leads. A visitor chatting on your site is comparing you to two competitors in other tabs — replying within minutes is the difference-maker."
+  },
+  {
+    "id": "sms-bridge",
+    "title": "How the SMS bridge works",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "Run your webchat from your phone\n\nWith the SMS bridge on, webchat doesn't chain you to the dashboard: new visitor messages reach you by text, and your text replies go straight back into the visitor's chat window.\n\nSetting it up\n\n1\nGo to Settings → Webchat & AI Agent\n\n2\nTurn on SMS notifications and SMS replies, and confirm the phone number to use\n\n3\nThat's it — next time a lead comes in while you're on a job, just reply to the text\n\n✓ Everything still lands in your Messages inbox too, so the full conversation history stays in one place no matter where you replied from."
+  },
+  {
+    "id": "webchat-notifications",
+    "title": "Webchat notification settings",
+    "category": "Webchat & Inbox",
+    "keywords": "",
+    "text": "Never miss a lead\n\nEvery webchat conversation is a potential customer. Notifications make sure new chats and handoffs reach you wherever you are.\n\nYour options\n\n1\nEmail notifications — a message to your chosen address when a new conversation starts or the AI hands off\n\n2\nSMS notifications — a text to your phone for the same events (pairs with the SMS bridge so you can reply by text too)\n\nWhere to set them\n\nBoth live in Settings → Webchat & AI Agent, per location — so the right person gets notified for each location you run.\n\n💡 Running a team? Point email notifications at a shared inbox and SMS at whoever is on duty."
+  },
+  {
+    "id": "contact-import",
+    "title": "Importing contacts for campaigns",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "Build your campaign audience\n\nSMS campaigns send to contacts in your Campaigns → Contacts list. Import them once and reuse the list for every campaign.\n\nStep by step\n\n1\nExport your customers as a .csv from your CRM or spreadsheet (name and mobile number at minimum)\n\n2\nGo to Campaigns → Contacts and upload the file\n\n3\nReview the preview, match the columns, and confirm\n\n⚠️ Only import people who have agreed to receive texts from your business. Texting without consent violates TCPA rules and carries serious fines — see the TCPA compliance guide before your first campaign.\n\n💡 Anyone who has opted out previously is automatically excluded from sends, even if they appear in a new import."
+  },
+  {
+    "id": "segments",
+    "title": "Creating audience segments",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "Right message, right people\n\nSegments let you group contacts in Campaigns → Segments so each campaign goes to the people it's actually relevant to — which means better response rates and fewer opt-outs.\n\nSegments that work for local businesses\n\n1\nRecent customers — served in the last 90 days; great for review requests and referral asks\n\n2\nLapsed customers — haven't been back in 6+ months; perfect for a win-back offer\n\n3\nVIPs / repeat customers — first access to promotions and seasonal slots\n\nWhen you compose a campaign, pick the segment instead of the full list. Smaller, targeted sends also stretch your monthly SMS limit much further."
+  },
+  {
+    "id": "campaign-limits",
+    "title": "SMS campaign limits",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "How limits work\n\nYour account includes a monthly SMS campaign allowance. The usage meter at the top of the Campaigns page shows messages used, messages remaining, and how far through the month you are.\n\nThe details\n\n1\nEvery message in a campaign counts toward the limit — a campaign to 500 contacts uses 500 messages\n\n2\nThe allowance resets at the start of each billing month\n\n3\nIf a campaign would exceed your remaining allowance, trim the audience with a segment or wait for the reset\n\n💡 Consistently hitting the ceiling? The usage meter shows exactly where you stand, and a tighter, well-segmented audience stretches your allowance much further."
+  },
+  {
+    "id": "tcpa-compliance",
+    "title": "TCPA compliance guide",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "The rules of texting customers\n\nThe TCPA (Telephone Consumer Protection Act) is the US law governing marketing texts. Violations can cost $500–$1,500 per message, so this is worth five minutes of your time.\n\nThe essentials\n\n1\nGet consent first. Customers must agree to receive texts from you — a checkbox at booking, a signed form, or a verbal yes you record. Buying phone lists is never OK.\n\n2\nIdentify yourself. Every message should make clear which business it's from.\n\n3\nHonor opt-outs instantly. SwarmReply processes STOP replies automatically and blocks future sends to that number — you never have to manage this manually.\n\n4\nText at reasonable hours. Stay inside 8am–9pm in the customer's local time.\n\n⚠️ This guide is practical information, not legal advice. If you run large campaigns or operate in multiple states, a quick consultation with an attorney is smart insurance."
+  },
+  {
+    "id": "opt-outs",
+    "title": "Managing opt-outs",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "Opt-outs are handled for you\n\nWhen a contact replies STOP (or STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT), SwarmReply automatically marks them as opted out and excludes them from every future campaign. There is nothing you need to do — and no way to accidentally text them again.\n\nOpting back in\n\nIf a customer changes their mind, they can reply START, YES, or UNSTOP to the same number and they'll be re-subscribed automatically.\n\nWhy this protects you\n\nHonoring opt-outs immediately is a legal requirement under the TCPA, not a courtesy. Because it's enforced automatically at the sending level, an opted-out contact stays excluded even if they show up again in a fresh CSV import.\n\n✓ A few opt-outs per campaign is normal. A spike usually means the audience was too broad or the message wasn't relevant — tighten your segment next time."
+  },
+  {
+    "id": "sms-best-practices",
+    "title": "SMS campaign best practices",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "What separates great campaigns from spam\n\n1\nLead with value. A real offer, useful reminder, or genuine update — if you'd be annoyed receiving it, don't send it.\n\n2\nKeep it under 160 characters where you can. One message, one idea, one clear action.\n\n3\nIdentify yourself in the first few words — \"Hi, it's Maria from Sunrise Plumbing…\"\n\n4\nSend mid-morning or early evening, never late at night.\n\n5\nRespect frequency. One or two campaigns a month keeps your list healthy; weekly blasts burn it down.\n\n6\nSegment. A win-back offer to lapsed customers and a VIP early-access text will both outperform one generic blast to everyone.\n\n💡 Track results per campaign and double down on what your audience actually responds to — your customers will tell you what they want by what they click."
+  },
+  {
+    "id": "listings-overview",
+    "title": "How listings sync will work",
+    "category": "Listings Sync",
+    "keywords": "",
+    "text": "Coming to SwarmReply\n\nListings sync is in development. When it launches, SwarmReply will push your business name, address, phone, and hours to the major directories from one place — and flag mismatches that confuse customers and hurt local search ranking.\n\nWhat to do today\n\n1\nKeep your Google Business Profile complete and current at business.google.com — it's the listing that matters most by far\n\n2\nMake sure your name, address, and phone are written identically everywhere they appear (your website, Google, Yelp, Facebook)\n\n💡 Consistent business details across the web is one of the strongest local SEO signals — it's worth an hour to audit yours manually while sync is on the way."
+  },
+  {
+    "id": "fix-mismatch",
+    "title": "Fixing a listing mismatch",
+    "category": "Listings Sync",
+    "keywords": "",
+    "text": "Why mismatches matter\n\nIf your phone number is different on Google than on Yelp, or your old address still appears somewhere, customers get confused and search engines trust your listings less. Automated mismatch detection is part of the listings sync feature currently in development.\n\nHow to fix mismatches manually today\n\n1\nWrite down your canonical details: exact business name, address, phone, website, hours\n\n2\nCheck the big four — Google Business Profile, Yelp, Facebook, Apple Maps — and correct anything that differs\n\n3\nSearch your business name and fix stragglers (old directories, chamber of commerce pages) as you find them\n\n✓ Moved or changed numbers recently? Old details linger for years — this audit is especially worth doing."
+  },
+  {
+    "id": "apple-maps",
+    "title": "Getting listed on Apple Maps",
+    "category": "Listings Sync",
+    "keywords": "",
+    "text": "Why Apple Maps matters\n\nRoughly half of US smartphones are iPhones, and Apple Maps is their default navigation. If your listing is missing or wrong, those customers literally can't find you. Apple Maps will be part of SwarmReply listings sync when it launches; here's how to get listed today.\n\nStep by step\n\n1\nGo to businessconnect.apple.com and sign in with an Apple ID\n\n2\nSearch for your business — it may already exist from public data. Claim it, or add it new\n\n3\nVerify ownership (Apple typically calls your business phone)\n\n4\nComplete your profile with the same details you use on Google — identical name, address, and phone"
+  },
+  {
+    "id": "bing-places",
+    "title": "Getting listed on Bing Places",
+    "category": "Listings Sync",
+    "keywords": "",
+    "text": "Ten minutes, free visibility\n\nBing powers search for Microsoft Edge, Windows, and increasingly AI assistants — a meaningful slice of local searches that most of your competitors ignore. Bing Places will be part of SwarmReply listings sync when it launches; claiming it manually today takes about ten minutes.\n\nStep by step\n\n1\nGo to bingplaces.com and sign in with a Microsoft account\n\n2\nUse \"Import from Google Business Profile\" — Bing copies your existing Google listing, which keeps details consistent automatically\n\n3\nVerify your business and you're done\n\n💡 The Google import option is the whole trick — never re-type your details by hand when you can sync them."
+  },
+  {
+    "id": "insights-overview",
+    "title": "Reports dashboard overview",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "Your reputation, measured\n\nReports in the sidebar is your analytics hub. Everything on the Analytics tab is computed from your real data — reviews, requests, surveys, and campaigns — with no estimates or filler.\n\nWhat you'll find\n\n1\nReview overview & trends — total reviews, average rating, the star-by-star distribution, and how rating, volume, and sentiment move over time\n\n2\nNPS & loyalty — your NPS score, the promoter / passive / detractor split, the reasons detractors give, and a results chart for every question on your survey\n\n3\nResponses — browse individual survey responses, filter by sentiment, channel, date, or keyword, read every answer, and export the filtered set to a spreadsheet\n\n4\nRequests & campaigns — review requests sent, plus the results of your SMS campaigns\n\n💡 Use the range picker (7 days / 30 days / 90 days / 12 months) to zoom between \"how's this week going\" and \"how's this year going\".\n\nFor more on the survey reports, see Reading your NPS & loyalty report and Filtering & exporting survey responses. Competitor tracking, listing accuracy, and Google Posts analytics are coming to Reports soon."
+  },
+  {
+    "id": "feedback-report",
+    "title": "Reading your NPS & loyalty report",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "The loyalty picture, at a glance\n\nOpen Reports → NPS & loyalty for everything your surveys are telling you. Set the date range at the top of the page — the whole report respects it.\n\nWhat's on it\n\n1\nYour NPS score — the headline number, from −100 to +100, plus how it's changed versus the previous period\n\n2\nPromoters · passives · detractors — how your responses split across the three groups, with counts\n\n3\nTop reasons detractors gave — the themes behind low scores, ranked\n\n4\nSurvey question results — a chart for every question on your survey: choice questions broken down by option, rating and scale questions by value with an average\n\n💡 Open-text answers aren't charted here — they're individual by nature. Read them one by one in Reports → Responses.\n\nYour NPS score also appears on your Home dashboard, so you can keep an eye on it without opening Reports."
+  },
+  {
+    "id": "survey-responses-export",
+    "title": "Filtering & exporting survey responses",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "Every response, on your terms\n\nThe Reports → Responses view lets you dig into individual survey responses instead of just the totals — useful when you want to find a specific customer, audit a recurring theme, or pull data into a spreadsheet.\n\nFiltering\n\n1\nSentiment — show only promoters, passives, or detractors\n\n2\nChannel — email or SMS\n\n3\nDate range — last 30 / 90 days, 12 months, or all time\n\n4\nKeyword — search the text of every answer for a word or phrase (try \"wait\", \"refund\", or \"rude\")\n\nReading & exporting\n\nClick any row to expand it and read every answer that response gave. Hit Export CSV to download the filtered set as a spreadsheet — one row per response, one column per question — ready for Excel, Google Sheets, or your own analysis.\n\n💡 Filters and export work together: narrow to \"detractors who mentioned 'booking' in the last 90 days,\" then export exactly that set."
+  },
+  {
+    "id": "sentiment-score",
+    "title": "Understanding your sentiment score",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "How sentiment is calculated\n\nSentiment groups your reviews by star rating: 4–5 stars count as positive, 3 stars as neutral, and 1–2 stars as negative. The sentiment trend in Reports shows how that mix shifts week by week over the last 8 weeks.\n\nHow to read it\n\n1\nSteady and mostly positive — healthy; keep the review requests flowing\n\n2\nA negative spike in one week — something specific happened; read that week's reviews and find the common thread\n\n3\nA slow slide — a process or staffing issue creeping in; your detractor survey feedback usually names it\n\n💡 Sentiment moves before your average rating does — a 4.8 with two bad weeks of sentiment is an early warning your overall score hasn't shown yet."
+  },
+  {
+    "id": "keyword-tracker",
+    "title": "Using the keyword tracker",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "Know where you rank\n\nRank Tracking (under Get Found in the sidebar) follows where your business appears in search results for the keywords that matter — \"plumber near me\", \"best salon in Auburn\", whatever your customers actually type.\n\nSetting it up\n\n1\nOpen Get Found and switch to Rank Tracking\n\n2\nAdd the keywords to track — your Setup Guide can suggest a starter set based on your business type and city\n\n3\nCheck back over the following weeks to see positions and movement for each keyword\n\n💡 Track 5–15 keywords you'd genuinely want to win, mixing service terms (\"water heater repair\") with local intent (\"near me\", your city name). More isn't better — focused is better."
+  },
+  {
+    "id": "competitor-benchmarking",
+    "title": "Competitor benchmarking",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "Coming to Reports\n\nCompetitor benchmarking is in development. When it arrives in your Reports dashboard, you'll be able to track competitors' ratings, review volume, and momentum next to your own — so \"are we winning?\" gets a real answer.\n\nHow to benchmark manually today\n\n1\nPick your three closest competitors\n\n2\nOnce a month, note their Google rating and total review count alongside yours\n\n3\nWatch the pace — a competitor adding 20 reviews a month is telling you what consistent review requests can do\n\n💡 The goal isn't to obsess over rivals — it's to know whether your review growth is keeping up with your market."
+  },
+  {
+    "id": "rating-velocity",
+    "title": "Rating velocity explained",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "Fresh reviews beat old ones\n\nRating velocity is the pace of your incoming reviews. Google and customers both weigh recency heavily: a 4.7 with ten reviews this month beats a 4.9 whose last review is from 2024.\n\nWhere to see yours\n\nThe review volume trend in Reports shows your reviews per week. What you want is a steady drumbeat — not a burst after a campaign followed by months of silence.\n\nHow to keep velocity up\n\n1\nMake the review request part of every job's closing routine\n\n2\nAutomate it — the Jobber and Stripe triggers send requests the moment work completes, without anyone remembering to\n\n3\nUse Bulk Send occasionally to catch customers who slipped through"
+  },
+  {
+    "id": "monthly-report",
+    "title": "Your weekly summary email",
+    "category": "Insights & Analytics",
+    "keywords": "",
+    "text": "Your week, delivered\n\nSwarmReply sends a weekly summary email recapping what happened with your reputation — reviews handled, your current average rating, and the highlights worth knowing — so you stay informed without logging in.\n\nControlling it\n\n1\nGo to Settings → Account → Alert preferences\n\n2\nToggle the weekly digest on or off (negative-review and all-review alerts live here too)\n\nWant more detail?\n\nThe Reports dashboard has the full picture any time — trends, distributions, NPS, and campaign results across whatever date range you choose."
+  },
+  {
+    "id": "llm-setup",
+    "title": "Setting up AI visibility monitoring",
+    "category": "AI Visibility Monitoring",
+    "keywords": "",
+    "text": "Get found by AI, not just Google\n\nCustomers increasingly ask ChatGPT, Claude, and Gemini for recommendations — \"best electrician near Auburn\" — instead of searching. AI Visibility monitoring shows whether those assistants mention you.\n\nStep by step\n\n1\nOpen Get Found → AI Visibility\n\n2\nAdd the queries to monitor — the questions a customer would actually ask. Your Setup Guide can suggest a starter set for your business type and area\n\n3\nRun a scan — SwarmReply asks ChatGPT, Claude, and Gemini your queries and records whether your business comes up and what's said about it\n\n4\nReview the results, then re-scan over time to track your progress\n\n💡 Monitor 5–10 realistic queries. \"Best [your service] in [your city]\" and \"who should I call for [problem]\" are the patterns customers actually use.\n\n✓ You'll know it worked when a scan finishes and each query shows a result (mentioned or not), and a visibility score appears. A 0 to start is completely normal."
+  },
+  {
+    "id": "visibility-score",
+    "title": "Understanding your visibility score",
+    "category": "AI Visibility Monitoring",
+    "keywords": "",
+    "text": "What the score means\n\nYour visibility score reflects how often the AI assistants — ChatGPT, Claude, and Gemini — mention your business when asked the queries you monitor. Mentioned in most answers: high score. Invisible: low score.\n\nReading your results\n\n1\nPer query — see exactly which questions you show up for and which you don't\n\n2\nPer model — assistants differ; you might appear in Gemini (which leans on Google data) but not ChatGPT\n\n3\nOver time — re-scans show whether your visibility work is paying off\n\n💡 Don't panic at a low first score — most local businesses are invisible to AI today. That's the opportunity: the bar is low and your competitors aren't watching it."
+  },
+  {
+    "id": "improve-visibility",
+    "title": "How to improve your AI visibility",
+    "category": "AI Visibility Monitoring",
+    "keywords": "",
+    "text": "What AI assistants actually weigh\n\nAI assistants recommend businesses that look established, well-reviewed, and consistently described across the web. You can influence every one of those signals.\n\nThe playbook\n\n1\nGrow review volume and recency — reviews are the strongest trust signal AI models lean on. Steady review requests are the engine here\n\n2\nComplete your Google Business Profile — categories, services, photos, hours; assistants draw heavily on it\n\n3\nKeep your details identical everywhere — same name, address, phone on your site, Google, Yelp, and Facebook\n\n4\nSay what you do, in plain words, on your website — pages that literally answer \"water heater repair in Auburn\" give AI something to cite\n\n5\nRe-scan monthly and watch which queries flip from invisible to mentioned"
+  },
+  {
+    "id": "google-posts-settings",
+    "title": "Google Posts auto-publisher",
+    "category": "Settings",
+    "keywords": "",
+    "text": "Publish straight to your Google Business Profile\n\nSwarmReply posts to your Google Business Profile — offers, updates, and highlights — right from your dashboard, so your profile stays active without logging into Google. Fresh posts are a signal Google rewards, and they surface when customers find you on Search and Maps.\n\nConnect once\n\n1\nGo to Settings → Social Posting Accounts and connect Google Business\n\n2\nClick Connect and approve access — your locations are detected automatically\n\nCreate a post\n\n1\nOpen Campaigns → Social Posts and select Google Business. You can tick Facebook, Instagram, and LinkedIn at the same time to post everywhere at once\n\n2\nChoose a content type and write your update. Google Business posts support text, images, and links (not video or Reels)\n\n3\nPost now or schedule it for a date and time — SwarmReply publishes it to your profile for you\n\n💡 Not sure what to post? A short weekly update — a recent job, a seasonal offer, a new service — is plenty to keep your profile looking active and current."
+  },
+  {
+    "id": "review-links",
+    "title": "Setting up your review links",
+    "category": "Settings",
+    "keywords": "",
+    "text": "One setting, used everywhere\n\nSettings → Review Links stores your Google, Yelp, and Facebook review URLs per location. These links power your request templates' platform buttons and the buttons survey promoters see — set them once and everything stays in sync.\n\nStep by step\n\n1\nGo to Settings → Review Links and pick the location\n\n2\nGoogle: search your business on Google, open your Business Profile, click \"Ask for reviews\", and copy the short link\n\n3\nYelp / Facebook (optional): paste the URL of your Yelp listing and your Facebook page's Reviews tab\n\n4\nSave — your templates and surveys pick up the new links immediately\n\n✓ Multiple locations? Each keeps its own links, so customers always land on the right listing.\n\n✓ You'll know it worked when the Google button in a request template — and on your survey — opens your business's review page."
+  },
+  {
+    "id": "reply-templates",
+    "title": "Customising AI reply style",
+    "category": "AI Replies",
+    "keywords": "",
+    "text": "Make replies sound like you\n\nSwarmReply drafts an on-brand response to every new Google review automatically. You control the voice in Settings → AI Replies:\n\n1\nTone — warm, professional, casual and more; pick what matches your brand\n\n2\nAlways include — phrases or details every reply should mention (e.g. your team name, a booking link)\n\n3\nNever include — anything replies must avoid (discounts, specific staff names, etc.)\n\nChanges apply to every reply drafted from that moment on. New reviews are picked up automatically about every 30 minutes.\n\n💡 Want to sign off on each reply before it posts? Turn on the approval queue — see Editing a reply before it posts."
+  },
+  {
+    "id": "multi-language",
+    "title": "Replies in other languages",
+    "category": "AI Replies",
+    "keywords": "",
+    "text": "Where multi-language stands today\n\nAI replies currently post in English. Language detection is built into the platform, and fully automatic same-language replies are on the near-term roadmap.\n\nHandling non-English reviews now\n\n1\nSwitch to approval mode (Reviews → Approvals) so non-English reviews wait for you instead of getting an English auto-reply\n\n2\nUse Edit on the draft to translate or rewrite it in the reviewer's language, then post\n\n⚠️ If a meaningful share of your reviews come in another language, we recommend approval mode until automatic same-language replies ship."
+  },
+  {
+    "id": "reply-quality",
+    "title": "How SwarmReply writes quality replies",
+    "category": "AI Replies",
+    "keywords": "",
+    "text": "What goes into every reply\n\nReplies are drafted by Claude, one of the leading AI models, using your business profile: your business name, type, tone setting, and the specifics of the review itself — the reviewer's name, their star rating, and what they actually wrote. Five-star raves get genuine thanks; critical reviews get a measured, professional response that takes the conversation offline.\n\nMaking replies even better\n\n1\nFill in your business details fully in Settings — the more context, the more specific the reply\n\n2\nUse Always include for the touches that make replies unmistakably yours\n\n3\nRun approval mode for a week when you start — edit anything that misses your voice, then switch to automatic once you trust it\n\n💡 Replying to every review — positive and negative — is one of the strongest signals for both local SEO and AI search visibility."
+  },
+  {
+    "id": "edit-reply",
+    "title": "Editing a reply before it posts",
+    "category": "AI Replies",
+    "keywords": "",
+    "text": "Two modes: automatic or approve-first\n\nBy default SwarmReply posts AI replies automatically. If you'd rather review each one first, switch to approval mode:\n\n1\nOpen Reviews → Approvals and set the mode to Approve first\n\n2\nNew AI drafts now wait in the Approvals queue instead of posting\n\n3\nFor each draft: Approve posts it to Google as-is, Edit lets you adjust the wording before posting, Reject discards it\n\nThe original AI draft is kept in your history even when you edit, so you can always see what was suggested versus what was posted.\n\n💡 Approval mode is per location — a multi-location account can auto-post for one location and approve-first for another."
+  },
+  {
+    "id": "facebook-reviews",
+    "title": "Connecting Facebook Reviews",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this does\n\nConnecting your Facebook page lets SwarmReply monitor the reviews (recommendations) customers leave there, so they land in your Reviews tab alongside Google. You can reply to them directly on Facebook in a click.\n\nStep by step\n\n1\nGo to Integrations in your dashboard\n\n2\nFind Facebook Reviews and click Connect\n\n3\nLog into Facebook with an account that admins your business page and approve the permissions\n\n4\nPick the page — new reviews start flowing into your Reviews tab automatically\n\n✓ Also paste your page's review URL into Settings → Review Links so happy survey customers can be routed to Facebook too.\n\n✓ You'll know it worked when Facebook shows Connected and your existing Facebook recommendations appear in your Reviews tab alongside Google."
+  },
+  {
+    "id": "connect-jobber",
+    "title": "Connecting Jobber",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "What this does\n\nThe Jobber integration closes the loop on review timing: when a job is marked complete in Jobber, SwarmReply automatically sends that customer a review request — at the exact moment the experience is freshest.\n\nStep by step\n\n1\nGo to Integrations in your dashboard\n\n2\nFind Jobber and click Connect\n\n3\nLog into your Jobber account and approve the connection\n\n4\nDone — completed jobs now trigger review requests using your default template, with the customer's name and contact details pulled from the job\n\n💡 Polish your default template in Grow → Request Templates first — every automated request will use it. You can disconnect any time from the same Integrations page.\n\n✓ You'll know it worked when Jobber shows Connected on your Integrations page — completing a job then sends that customer a request using your default template."
+  },
+  {
+    "id": "sms-10dlc",
+    "title": "Why can't I send texts yet? (A2P 10DLC)",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "Texting needs carrier approval first\n\nIn the US, every business that texts customers must be registered with the mobile carriers under a program called A2P 10DLC (Application-to-Person, 10-Digit Long Code). It's an anti-spam standard the carriers require — not a SwarmReply rule — and until your registration is approved, outbound texts are held.\n\nWhat's happening behind the scenes\n\n1\nYour business and your messaging campaign are submitted to the carriers for vetting\n\n2\nThe carriers review and approve — usually a few business days, occasionally longer\n\n3\nOnce approved, SwarmReply switches texting on automatically — nothing for you to do\n\nWhat you can do right now\n\nEmail review requests work today with no registration required, so you can start collecting reviews immediately while SMS is pending. The moment 10DLC clears, your text and email requests run side by side.\n\n💡 You'll see a banner in Grow and Campaigns while texting is pending — it disappears on its own once you're approved."
+  },
+  {
+    "id": "sms-sender-number",
+    "title": "What number do my texts come from?",
+    "category": "SMS Campaigns",
+    "keywords": "",
+    "text": "A dedicated number for your account\n\nYour review requests and campaigns send from a dedicated 10-digit business number assigned to your account during 10DLC registration. It stays the same, so customers see a consistent sender and can reply.\n\nReplies and STOP\n\nIf a customer replies to a text, it's captured so you can follow up. If they reply STOP, they're unsubscribed automatically and won't receive further texts — SwarmReply handles this to keep you compliant.\n\n💡 Always close marketing texts with \"Reply STOP to unsubscribe.\" It's required, and SwarmReply processes the opt-out instantly."
+  },
+  {
+    "id": "review-gating-policy",
+    "title": "Surveys and Google's review policy",
+    "category": "Surveys & NPS",
+    "keywords": "",
+    "text": "The short version\n\nSwarmReply surveys are designed to gather private feedback and to make it easy for happy customers to share their experience publicly. Used as intended, every customer is always free to leave a public review — nothing blocks or filters that.\n\nWhy this matters\n\nGoogle's policies prohibit \"review gating\" — soliciting public reviews only from customers you expect to be positive while steering unhappy ones away from the public review form. It's worth understanding so you stay on the right side of it.\n\nUsing surveys the right way\n\n1\nTreat the survey as a feedback tool first — it tells you how customers feel and gives unhappy ones a private way to reach you\n\n2\nKeep your public review links available to everyone — in your email signature, on receipts, on your website — not only to survey promoters\n\n3\nNever tell a customer they can't or shouldn't leave a public review based on their score\n\n💡 This is general guidance, not legal advice. Review platforms set and update their own policies — when in doubt, check Google's current review guidelines or ask a professional."
+  },
+  {
+    "id": "reconnect-google",
+    "title": "Reconnecting your Google Business Profile",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "Why a reconnect is sometimes needed\n\nGoogle connections use a secure token that can expire or be revoked — for example if you change your Google password, remove SwarmReply's access, or Google times out the session. When that happens, new reviews stop syncing until you reconnect.\n\nHow you'll know\n\nIf you've turned on the \"Google connection breaks\" alert (Settings → Account → Alert preferences), you'll get an email or text. You may also see a reconnect prompt on your dashboard.\n\nHow to reconnect\n\n1\nGo to Integrations in your dashboard\n\n2\nFind Google Business Profile and click Reconnect\n\n3\nSign in with the Google account that manages your Business Profile and approve access\n\n4\nSyncing resumes automatically — recent reviews catch up within a few minutes\n\n✓ Use the same Google account that owns or manages the Business Profile — a personal account without access to the listing won't work."
+  },
+  {
+    "id": "webchat-not-showing",
+    "title": "Webchat isn't showing on my site",
+    "category": "Webchat & Inbox",
+    "keywords": "not showing missing bubble widget chat invisible disappeared gone",
+    "text": "Most common causes\n\n1\nThe snippet isn't on the page — make sure the embed code from Settings → Webchat & AI Agent is pasted into your site's footer (before the closing body tag) on every page you want it\n\n2\nCaching — clear your site or CDN cache and hard-refresh (Ctrl/Cmd + Shift + R) after adding the code\n\n3\nPasted in the wrong place — many site builders need the code in a \"custom code\" or \"footer injection\" area, not inside a text block\n\n4\nThe widget is turned off — confirm webchat is enabled in Settings → Webchat & AI Agent\n\nStill not appearing?\n\nOpen your site, right-click and choose \"View page source,\" and search for \"swarmreply\" — if it's not there, the snippet didn't save. If it is there but the bubble doesn't show, an ad-blocker or a conflicting script may be hiding it.\n\n💡 On single-page sites (React, Vue, and similar) the snippet should load once in the main template so it persists as visitors navigate."
+  },
+  {
+    "id": "request-not-sending",
+    "title": "A review request didn't send",
+    "category": "Review Generation",
+    "keywords": "not sending didnt send wont send failed deliver delivery text texts sms email stuck pending nothing happened bounce",
+    "text": "For text (SMS) requests\n\n1\nTexting may still be pending — if your A2P 10DLC registration isn't approved yet, texts are held. Email requests still work in the meantime\n\n2\nThe customer opted out — anyone who replied STOP won't receive texts. Reach them by email instead\n\n3\nBad or missing number — the number must be a valid mobile. Landlines can't receive texts\n\nFor email requests\n\n1\nMissing email — the contact needs a valid email address on file\n\n2\nCheck spam — ask the customer to look in their spam or promotions folder\n\nEither way\n\nSwarmReply is built to fail softly — one bad contact never stops the rest of a batch from going out. Fix the email or number and resend.\n\n✓ Sending to a list? Grow → Bulk Send shows the result for each contact so you can spot any that didn't go."
+  },
+  {
+    "id": "review-not-showing",
+    "title": "A review I got isn't showing up",
+    "category": "Review Generation",
+    "keywords": "not showing missing review didnt appear where is my review delay delayed late synced",
+    "text": "Give it a little time\n\nSwarmReply pulls new reviews from Google and Facebook on a regular sync, so a brand-new review can take a short while to appear in your Reviews tab. It isn't instant.\n\nIf it still hasn't appeared\n\n1\nConfirm where it was left — SwarmReply syncs Google and Facebook reviews; a review on another site won't appear here\n\n2\nCheck your Google connection — if it has disconnected, new reviews stop syncing until you reconnect (see Reconnecting your Google Business Profile)\n\n3\nMake sure it posted publicly — a review saved as a draft, or one the platform filtered, won't show anywhere\n\n✓ Connected your Facebook page? Its recommendations land in the same Reviews tab alongside Google."
+  },
+  {
+    "id": "visibility-zero",
+    "title": "My visibility score is 0 — what now?",
+    "category": "AI Visibility",
+    "keywords": "zero no mentions not appearing not showing score dropped nothing low",
+    "text": "A 0 is a starting point, not a failure\n\nA score of 0 means the AI assistants didn't mention your business in this week's test questions — completely normal for a business that's new to AI visibility. The good news: it's the most improvable number on your dashboard, and reviews move it.\n\nWhat actually moves the score\n\n1\nGrow review volume and recency — fresh, frequent reviews are the strongest signal AI models weigh\n\n2\nComplete your Google Business Profile — categories, services, hours, photos\n\n3\nKeep your name, address, and phone identical everywhere — your site, Google, Yelp, Facebook\n\n4\nSay what you do, in plain words, on your website\n\nIf your score dropped\n\nWeek-to-week movement is normal — AI answers vary, and a competitor's surge can edge you out of a single response. Watch the trend over a few weeks rather than any one scan. Your Overview tab's executive summary explains what changed and what to try next.\n\n💡 Scores build over weeks, not days. Steady review generation is the compounding engine behind a rising score."
+  },
+  {
+    "id": "data-security",
+    "title": "Data, privacy & security",
+    "category": "Settings",
+    "keywords": "",
+    "text": "Where your data lives\n\nSwarmReply runs on established cloud infrastructure in the United States. Your data is encrypted in transit (HTTPS/TLS) and at rest, and access is restricted to the systems that need it.\n\nPayments\n\nAll billing is handled by Stripe, a PCI-compliant payment processor. Your card details go straight to Stripe and are never stored on SwarmReply's servers.\n\nYour data is yours\n\nThe contacts, reviews, and messages in your account belong to you. SwarmReply uses them only to provide the service — sending the requests you set up, syncing your reviews, and producing your reports. We don't sell your data.\n\nConnected accounts\n\nWhen you connect Google, Facebook, or another integration, SwarmReply requests only the access it needs and stores the connection securely. You can disconnect any integration at any time from the Integrations page, which revokes that access.\n\n💡 Working on a security or vendor review? Email hello@swarmreply.com and we'll help with your questionnaire."
+  },
+  {
+    "id": "export-delete-data",
+    "title": "Exporting or deleting your data",
+    "category": "Settings",
+    "keywords": "",
+    "text": "Exporting your data\n\nNeed a copy of your contacts, reviews, or other records? Email hello@swarmreply.com from your account email and we'll get you an export. (Contacts you imported can also be kept in your own CSV.)\n\nDeleting your data\n\nIf you cancel, your data stays saved in case you reactivate — everything stays exactly as you left it. Want it permanently deleted instead? Email us and we'll take care of it.\n\n✓ Deletion is permanent and can't be undone, so export anything you want to keep first."
+  },
+  {
+    "id": "account-security",
+    "title": "Logging in & account security",
+    "category": "Settings",
+    "keywords": "",
+    "text": "Signing in\n\nLog in to your SwarmReply dashboard with your email and password. If you were invited to a team, you set your password from the invite link.\n\nForgot your password?\n\n1\nOn the login page, click Forgot password\n\n2\nEnter your account email — we'll send a reset link\n\n3\nOpen the link and choose a new password. The link is single-use and expires for security\n\nKeeping your account secure\n\nUse a strong, unique password, and give each team member their own login rather than sharing one. Remove anyone who leaves from Settings → Team so their access ends immediately.\n\n💡 See unfamiliar activity, or can't get a reset email? Email hello@swarmreply.com right away."
+  },
+  {
+    "id": "team-roles",
+    "title": "Team roles & permissions",
+    "category": "Settings",
+    "keywords": "",
+    "text": "Three roles\n\nEvery team member has one of three roles, set when you invite them (Settings → Team) and changeable later.\n\n1\nAdmin — full access, including billing and team management. This is the owner's level\n\n2\nManager — full platform access (reviews, inbox, AI visibility, Grow, Campaigns, plus AI/webchat and integration settings) but no billing or team management\n\n3\nStaff — day-to-day operational access: reviews, inbox, AI visibility, Grow, and Campaigns. No settings, billing, or team management\n\nChoosing a role\n\nGive front-desk and operational staff the Staff role, a trusted operations lead Manager, and keep Admin for owners who handle billing.\n\n✓ Only Admins can invite, change roles for, or remove team members."
+  },
+  {
+    "id": "connect-social",
+    "title": "Connecting your social accounts",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "Post everywhere from one place\n\nSwarmReply can publish to Facebook, Instagram, LinkedIn, Google Business, and TikTok. Connect each account once, then post to any or all of them from Campaigns → Social Posts.\n\nHow to connect\n\n1\nGo to Settings → Social Posting Accounts\n\n2\nClick Connect next to the platform and approve access in the pop-up\n\n3\nRepeat for each platform — connected accounts show a green status\n\nGood to know\n\nFacebook and Instagram connect together through Meta (you'll need a Facebook Page, and a Business profile for Instagram). LinkedIn requires a Company Page you administer. Each network has its own content rules — Instagram and TikTok need media, and Google Business posts don't support video.\n\n💡 Only connecting Google Business to publish posts? That lives here under Social Posting Accounts too."
+  },
+  {
+    "id": "schedule-social-posts",
+    "title": "Creating and scheduling social posts",
+    "category": "Integrations",
+    "keywords": "",
+    "text": "Compose once, post to many\n\n1\nGo to Campaigns → Social Posts and start a new post\n\n2\nChoose a content type — text, text + image, link, video, or reel/short\n\n3\nSelect the platforms to publish to (only the ones that support that content type are available)\n\n4\nWrite your post, then post now or schedule it for a date and time\n\nWhat posts where\n\nSwarmReply matches your content to each network's rules: text and links go to Facebook, LinkedIn, and Google Business; images and video to the networks that accept them; reels and short video to the platforms built for them.\n\n💡 Connect your accounts first under Settings → Social Posting Accounts — see Connecting your social accounts."
+  },
+  {
+    "id": "dispute-review",
+    "title": "Disputing a fake or unfair review",
+    "category": "Review Generation",
+    "keywords": "remove delete fake bad negative report flag dispute fight respond fraudulent",
+    "text": "First, respond — publicly and calmly\n\nEven when a review is unfair, a calm, professional public reply does more good than the review does harm: it shows future customers how you handle problems. SwarmReply can draft a measured response for you to review and post.\n\nIf it breaks the platform's rules, flag it\n\nPlatforms only remove reviews that violate their policies — spam, conflicts of interest, hate speech, or reviews not based on a real experience. Being negative isn't enough. To report one on Google:\n\n1\nOpen your Google Business Profile and find the review\n\n2\nUse the menu on the review to Report it, and select the policy it violates\n\n3\nGoogle reviews the report — this can take time, and removal isn't guaranteed\n\nThe most durable fix\n\nA steady stream of genuine positive reviews outweighs the occasional bad one and pulls your average back up far faster than waiting on a removal. That's the engine SwarmReply is built to run.\n\n💡 SwarmReply can't remove reviews for you — only the platform can — but it helps you respond well and out-earn the bad ones."
+  },
+  {
+    "id": "failed-payment",
+    "title": "A payment failed or was declined",
+    "category": "Billing & Plans",
+    "keywords": "declined failed payment card charge past due billing problem expired",
+    "text": "What happens\n\nIf a monthly charge fails — an expired card, insufficient funds, or a bank block — Stripe automatically retries it over the following days and emails you. Your account keeps working during this grace period.\n\nHow to fix it\n\n1\nGo to Settings → Billing and click Manage billing\n\n2\nUpdate your card in the Stripe billing portal\n\n3\nStripe re-attempts the charge — once it clears, you're all set\n\nIf it isn't resolved\n\nAfter repeated failed attempts your account may be paused until payment succeeds. Updating your card and clearing the balance restores access right away, and your data is retained throughout, so nothing is lost.\n\n✓ Card about to expire? Update it ahead of time in Settings → Billing → Manage billing to avoid any interruption."
+  },
+  {
+    "id": "google-import",
+    "title": "What gets imported when you connect Google",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "Connecting brings your reviews in automatically\n\nWhen you connect your Google Business Profile, SwarmReply imports your existing Google reviews so your reputation history is there from day one — no manual entry.\n\nWhat comes across\n\n1\nYour reviews — past Google reviews load into your Reviews tab, and new ones sync automatically going forward\n\n2\nYour business details — name, location, and category are detected, so AI visibility and reports are set up for the right business and city\n\nWhat it doesn't do\n\nConnecting Google does not post anything, change your listing, or message your customers. It reads your profile and reviews so SwarmReply can monitor and help — nothing happens without your say-so.\n\n✓ A large review history can take a few minutes to finish importing on first connect."
+  },
+  {
+    "id": "results-timeline",
+    "title": "How soon will I see results?",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "Reviews — days\n\nThis is the fastest win. Once you start sending requests, new reviews typically begin arriving within days, depending on how many customers you reach and how quickly they respond.\n\nAI visibility — weeks\n\nYour visibility score moves as your review volume, recency, and listings improve. Watch the trend over several weekly scans rather than overnight — it's a compounding result, not a switch.\n\nLocal rank — weeks to months\n\nSearch rankings shift slowly by nature; rank tracking is there to show steady movement over time, not day-to-day noise.\n\n💡 The biggest lever on all three is consistent review generation. Get requests flowing in week one and the rest follows."
+  },
+  {
+    "id": "mobile-app",
+    "title": "Can I use SwarmReply on my phone?",
+    "category": "Getting started",
+    "keywords": "",
+    "text": "Yes — right in your browser\n\nSwarmReply is a web app that works in any modern mobile browser, so you can check reviews, reply, and answer webchat from your phone — there's no app to download or update.\n\nAdd it to your home screen\n\n1\nOpen your dashboard in your phone's browser and sign in\n\n2\nUse your browser's Add to Home Screen option\n\n3\nIt opens full-screen, like an app, with one tap\n\n✓ Turn on alerts (Settings → Account → Alert preferences) so new reviews and webchats reach your phone the moment they happen."
+  }
+]
