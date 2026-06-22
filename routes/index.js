@@ -1460,6 +1460,7 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
 
       const brandColor = template.brandColor || '#f5c842';
       const brandLogo  = template.brandLogo  || 'https://swarmreply.com/bee-logo.png';
+      const logoAlign  = ({ left: 'left', middle: 'center', right: 'right' })[template.brandLogoPosition] || 'left';
       const buttonText = template.buttonText || 'Share Your Feedback →';
       const buttonLink = testLink;
 
@@ -1470,7 +1471,7 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
         '<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">',
 
         // Banner
-        '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0">',
+        '<tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0;text-align:' + logoAlign + '">',
         brandLogo
           ? '<img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain">'
           : '<span style="font-weight:800;font-size:1.15rem;color:#0a0a0a">' + businessName + '</span>',
@@ -3125,8 +3126,11 @@ router.post('/review-requests/bulk-send', authenticateToken, async (req, res) =>
     const locationId = locResult.rows[0]?.id;
     const resend = new Resend(process.env.RESEND_TRANSACTIONAL_KEY || process.env.RESEND_API_KEY);
     const crypto = require('crypto');
-    const brandColor = '#f5c842';
-    const brandLogo = 'https://swarmreply.com/bee-logo.png';
+    const tmplRes = await query('SELECT config FROM review_templates WHERE customer_id=$1', [customerId]).catch(() => ({ rows: [] }));
+    const tmpl = tmplRes.rows[0]?.config || {};
+    const brandColor = tmpl.brandColor || '#f5c842';
+    const brandLogo = tmpl.brandLogo || 'https://swarmreply.com/bee-logo.png';
+    const logoAlign = ({ left: 'left', middle: 'center', right: 'right' })[tmpl.brandLogoPosition] || 'left';
     let sent = 0, failed = 0, skipped = 0;
 
     // Skip anyone the customer manually opted out of review requests.
@@ -3150,7 +3154,7 @@ router.post('/review-requests/bulk-send', authenticateToken, async (req, res) =>
       ).catch(e => logger.warn('bulk insert error:', e.message));
       const reviewLink = 'https://app.swarmreply.com/review/' + token;
       const bodyHtml = 'Hi ' + firstName + ',<br><br>Thank you for choosing ' + businessName + '! We would love to hear how we did. It only takes a moment.';
-      const emailHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif"><table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px"><table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%"><tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0"><img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain"></td></tr><tr><td style="background:#ffffff;padding:36px 32px"><h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How did we do, ' + firstName + '?</h2><div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' + bodyHtml + '</div><div style="text-align:center"><a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Share Your Feedback &rarr;</a></div></td></tr><tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center"><span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span></td></tr></table></td></tr></table></body></html>';
+      const emailHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#f4f4f0;font-family:Arial,sans-serif"><table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px"><table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%"><tr><td style="background:' + brandColor + ';padding:20px 32px;border-radius:12px 12px 0 0;text-align:' + logoAlign + '"><img src="' + brandLogo + '" alt="' + businessName + '" style="max-height:52px;max-width:180px;object-fit:contain"></td></tr><tr><td style="background:#ffffff;padding:36px 32px"><h2 style="margin:0 0 16px;font-size:1.25rem;color:#0a0a0a">How did we do, ' + firstName + '?</h2><div style="font-size:.9rem;line-height:1.75;color:#3a3a38;margin-bottom:28px">' + bodyHtml + '</div><div style="text-align:center"><a href="' + reviewLink + '" style="display:inline-block;background:' + brandColor + ';color:#0a0a0a;text-decoration:none;padding:14px 32px;border-radius:50px;font-weight:700;font-size:.95rem">Share Your Feedback &rarr;</a></div></td></tr><tr><td style="background:' + brandColor + ';padding:14px 32px;border-radius:0 0 12px 12px;text-align:center"><span style="font-size:.72rem;color:#0a0a0a;opacity:.65">Sent by ' + businessName + ' via SwarmReply</span></td></tr></table></td></tr></table></body></html>';
       try {
         const { data, error } = await resend.emails.send({
           from: process.env.SMTP_FROM || 'SwarmReply <nick@swarmreply.com>',
