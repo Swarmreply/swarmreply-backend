@@ -1669,3 +1669,97 @@ router.get('/analytics/overview', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to load analytics overview' });
   }
 });
+
+// ── CSV cell escaper (analytics exports) ──────────────────────────────────
+function csvCell(v) {
+  const s = String(v === undefined || v === null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Revenue (P1 Part 1). Current-state MRR/ARR/ARPU + breakdowns by
+// plan / vertical / acquisition source, read from the most recent snapshot and
+// filter-aware via the shared compiler. mrr_cents is captured nightly from the
+// active-location graduated pricing, so these totals match the Revenue page's
+// definition. Append ?format=csv to download the breakdown. Tolerates an empty
+// snapshot table (hasData:false) until the first nightly snapshot lands.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/revenue', requireAdmin, async (req, res) => {
+  try {
+    let asOf = req.query.asOf;
+    if (!asOf) {
+      const latest = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+      asOf = latest.rows[0] && latest.rows[0].d;
+    }
+    if (!asOf) return res.json({ hasData: false, asOf: null });
+
+    const { clauses, params } = buildSnapshotFilter(req.query, 1);
+    // Breakdowns reference customer attributes (vertical, source), so always join.
+    const join = 'JOIN customers c ON c.id = s.customer_id';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+
+    const totalsSql = `
+      SELECT
+        COALESCE(SUM(s.mrr_cents), 0)          AS mrr_cents,
+        COUNT(*) FILTER (WHERE s.is_paying)    AS paying,
+        COUNT(*) FILTER (WHERE s.mrr_cents > 0) AS revenue_accounts
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE ${where}`;
+
+    const byDim = (dimExpr) => `
+      SELECT ${dimExpr} AS k,
+             COALESCE(SUM(s.mrr_cents), 0)           AS mrr_cents,
+             COUNT(*) FILTER (WHERE s.mrr_cents > 0) AS accounts
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE ${where}
+      GROUP BY ${dimExpr}
+      ORDER BY mrr_cents DESC, k`;
+
+    const [totals, byPlan, byVertical, bySource] = await Promise.all([
+      query(totalsSql, [asOf, ...params]),
+      query(byDim("COALESCE(NULLIF(s.plan, ''), '\u2014')"), [asOf, ...params]),
+      query(byDim("COALESCE(NULLIF(c.business_type, ''), 'Unspecified')"), [asOf, ...params]),
+      query(byDim("COALESCE(NULLIF(c.utm_source, ''), 'Direct / unknown')"), [asOf, ...params]),
+    ]);
+
+    const t = totals.rows[0] || {};
+    const mrr = Number(t.mrr_cents || 0) / 100;
+    const revAccounts = Number(t.revenue_accounts || 0);
+    const mapRows = (rows) => rows.map((r) => ({
+      key: r.k, mrr: Number(r.mrr_cents) / 100, accounts: Number(r.accounts),
+    }));
+    const payload = {
+      hasData: true,
+      asOf,
+      mrr,
+      arr: mrr * 12,
+      arpu: revAccounts > 0 ? mrr / revAccounts : 0,
+      paying: Number(t.paying || 0),
+      revenueAccounts: revAccounts,
+      byPlan:     mapRows(byPlan.rows),
+      byVertical: mapRows(byVertical.rows),
+      bySource:   mapRows(bySource.rows),
+    };
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const lines = [['Dimension', 'Segment', 'MRR', 'ARR', 'Accounts']];
+      lines.push(['Total', 'All', mrr.toFixed(2), (mrr * 12).toFixed(2), revAccounts]);
+      const push = (dim, rows) => rows.forEach((r) =>
+        lines.push([dim, r.key, r.mrr.toFixed(2), (r.mrr * 12).toFixed(2), r.accounts]));
+      push('Plan', payload.byPlan);
+      push('Vertical', payload.byVertical);
+      push('Source', payload.bySource);
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-revenue-${asOf}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json(payload);
+  } catch (err) {
+    logger.error('analytics revenue error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load revenue' });
+  }
+});
