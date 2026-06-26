@@ -1939,3 +1939,131 @@ router.get('/analytics/cohorts', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to load cohorts' });
   }
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Activation (P2 Part 1). Milestone attainment across the filtered
+// base (latest snapshot) plus time-to-value medians computed from live first-
+// request / first-review timestamps vs signup. The funnel anchors on real
+// product actions; integration adoption (feature-flagged at launch) and the
+// review-import nuance are handled in their own reports. Filter-aware.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/activation', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params } = buildSnapshotFilter(req.query, 1);
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const sql = `
+      WITH base AS (
+        SELECT s.customer_id, c.created_at::date AS signup,
+               s.onboarding_started, s.has_location, s.has_integration,
+               s.has_first_request, s.onboarding_completed
+        FROM analytics_daily_snapshot s
+        JOIN customers c ON c.id = s.customer_id
+        WHERE ${where}
+      ),
+      fr AS (SELECT customer_id, MIN(created_at)::date AS d FROM review_requests GROUP BY customer_id),
+      fv AS (SELECT l.customer_id, MIN(rv.review_date) AS d
+             FROM reviews rv JOIN locations l ON l.id = rv.location_id GROUP BY l.customer_id),
+      j AS (
+        SELECT b.*, fr.d AS first_req, fv.d AS first_rev
+        FROM base b
+        LEFT JOIN fr ON fr.customer_id = b.customer_id
+        LEFT JOIN fv ON fv.customer_id = b.customer_id
+      )
+      SELECT
+        COUNT(*)                                            AS total,
+        COUNT(*) FILTER (WHERE onboarding_started)          AS onb_started,
+        COUNT(*) FILTER (WHERE has_location)                AS has_location,
+        COUNT(*) FILTER (WHERE has_integration)             AS has_integration,
+        COUNT(*) FILTER (WHERE has_first_request)           AS has_request,
+        COUNT(*) FILTER (WHERE onboarding_completed)        AS onb_completed,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY (first_req - signup)::numeric)
+          FILTER (WHERE first_req IS NOT NULL AND first_req >= signup) AS ttv_req_median,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY (first_rev - signup)::numeric)
+          FILTER (WHERE first_rev IS NOT NULL AND first_rev >= signup) AS ttv_rev_median,
+        COUNT(*) FILTER (WHERE first_req IS NOT NULL AND first_req >= signup) AS reached_req,
+        COUNT(*) FILTER (WHERE first_rev IS NOT NULL AND first_rev >= signup) AS reached_rev
+      FROM j`;
+    const r = await query(sql, [latest, ...params]);
+    const row = r.rows[0] || {};
+    const n = (v) => Number(v || 0);
+    res.json({
+      hasData: true,
+      asOf: latest,
+      total: n(row.total),
+      funnel: [
+        { key: 'signed_up',     label: 'Signed up',           count: n(row.total) },
+        { key: 'onb_started',   label: 'Onboarding started',  count: n(row.onb_started) },
+        { key: 'has_location',  label: 'Added a location',    count: n(row.has_location) },
+        { key: 'has_request',   label: 'Sent first request',  count: n(row.has_request) },
+        { key: 'onb_completed', label: 'Onboarding complete', count: n(row.onb_completed) },
+      ],
+      ttv: {
+        firstRequestMedianDays: row.ttv_req_median === null ? null : Number(row.ttv_req_median),
+        firstReviewMedianDays:  row.ttv_rev_median === null ? null : Number(row.ttv_rev_median),
+        reachedRequest: n(row.reached_req),
+        reachedReview:  n(row.reached_rev),
+      },
+    });
+  } catch (err) {
+    logger.error('analytics activation error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load activation' });
+  }
+});
+
+// ANALYTICS — Outcomes (P2 Part 1). Review-request and review volume, request
+// completion, and weighted average rating across the filtered base (latest
+// snapshot). review_count includes reviews imported at onboarding, so the
+// request→review figure is labelled a ratio rather than strict attribution.
+router.get('/analytics/outcomes', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
+    const join = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const sql = `
+      SELECT
+        COUNT(*)                                              AS accounts,
+        COALESCE(SUM(s.requests_total), 0)                    AS requests_sent,
+        COALESCE(SUM(s.requests_completed), 0)                AS requests_completed,
+        COALESCE(SUM(s.review_count), 0)                      AS reviews,
+        COALESCE(SUM(s.survey_responses), 0)                  AS survey_responses,
+        COALESCE(ROUND((SUM(s.avg_rating * s.review_count) / NULLIF(SUM(s.review_count), 0))::numeric, 2), 0) AS avg_rating,
+        COUNT(*) FILTER (WHERE s.review_count > 0)            AS accounts_with_reviews,
+        COUNT(*) FILTER (WHERE s.requests_total > 0)          AS accounts_with_requests
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE ${where}`;
+    const r = await query(sql, [latest, ...params]);
+    const row = r.rows[0] || {};
+    const n = (v) => Number(v || 0);
+    const requestsSent = n(row.requests_sent);
+    const requestsCompleted = n(row.requests_completed);
+    const reviews = n(row.reviews);
+    const acctWithReviews = n(row.accounts_with_reviews);
+    res.json({
+      hasData: true,
+      asOf: latest,
+      accounts: n(row.accounts),
+      requestsSent,
+      requestsCompleted,
+      reviews,
+      surveyResponses: n(row.survey_responses),
+      avgRating: n(row.avg_rating),
+      accountsWithReviews: acctWithReviews,
+      accountsWithRequests: n(row.accounts_with_requests),
+      completionRate: requestsSent > 0 ? requestsCompleted / requestsSent : null,
+      reviewsPerRequest: requestsSent > 0 ? reviews / requestsSent : null,
+      reviewsPerAccount: acctWithReviews > 0 ? reviews / acctWithReviews : null,
+    });
+  } catch (err) {
+    logger.error('analytics outcomes error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load outcomes' });
+  }
+});
