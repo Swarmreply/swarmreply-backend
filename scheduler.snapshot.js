@@ -29,7 +29,8 @@ INSERT INTO analytics_daily_snapshot (
   contact_count, opted_out_count, review_count, avg_rating,
   requests_total, requests_completed, survey_responses, ai_visibility_score,
   onboarding_started, onboarding_completed,
-  has_location, has_integration, has_first_request, has_first_review
+  has_location, has_integration, has_first_request, has_first_review,
+  mrr_cents
 )
 SELECT
   CURRENT_DATE,
@@ -55,12 +56,24 @@ SELECT
   COALESCE(loc.cnt, 0)  > 0,
   COALESCE(intg.cnt, 0) > 0,
   COALESCE(rq.total, 0) > 0,
-  COALESCE(rv.cnt, 0)   > 0
+  COALESCE(rv.cnt, 0)   > 0,
+  -- MRR (cents) from the graduated per-location pricing model, active locations
+  -- only, for active non-demo accounts — matches the admin Revenue page formula
+  -- (estimateMonthly: 1-2 @ $99, 3-25 @ $89, 26-99 @ $79).
+  CASE WHEN c.status = 'active' AND COALESCE(c.is_demo, false) = false AND COALESCE(actloc.cnt, 0) >= 1
+       THEN ( LEAST(actloc.cnt, 2) * 99
+            + GREATEST(LEAST(actloc.cnt - 2, 23), 0) * 89
+            + GREATEST(LEAST(actloc.cnt - 25, 74), 0) * 79 ) * 100
+       ELSE 0 END
 FROM customers c
 LEFT JOIN (
   SELECT customer_id, COUNT(*) cnt
   FROM locations GROUP BY customer_id
 ) loc ON loc.customer_id = c.id
+LEFT JOIN (
+  SELECT customer_id, COUNT(*) cnt
+  FROM locations WHERE is_active = true GROUP BY customer_id
+) actloc ON actloc.customer_id = c.id
 LEFT JOIN (
   SELECT l.customer_id,
          COUNT(DISTINCT i.provider) cnt,
@@ -117,6 +130,7 @@ ON CONFLICT (snapshot_date, customer_id) DO UPDATE SET
   has_integration        = EXCLUDED.has_integration,
   has_first_request      = EXCLUDED.has_first_request,
   has_first_review       = EXCLUDED.has_first_review,
+  mrr_cents              = EXCLUDED.mrr_cents,
   captured_at            = now();
 `;
 
