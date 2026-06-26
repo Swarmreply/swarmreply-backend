@@ -2067,3 +2067,166 @@ router.get('/analytics/outcomes', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to load outcomes' });
   }
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Feature adoption & breadth (P2 Part 2). Share of the filtered
+// base using each captured feature, plus how many features the average account
+// touches (breadth) and its distribution. Signals are the snapshot proxies:
+// review requests, surveys, contacts, integrations, AI visibility. Filter-aware.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/features', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
+    const join = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const sql = `
+      WITH base AS (
+        SELECT
+          (s.requests_total > 0)::int           AS f_requests,
+          (s.survey_responses > 0)::int         AS f_surveys,
+          (s.contact_count > 0)::int            AS f_contacts,
+          (s.integration_count > 0)::int        AS f_integrations,
+          (s.ai_visibility_score IS NOT NULL)::int AS f_visibility
+        FROM analytics_daily_snapshot s
+        ${join}
+        WHERE ${where}
+      ),
+      b AS (SELECT *, (f_requests + f_surveys + f_contacts + f_integrations + f_visibility) AS breadth FROM base)
+      SELECT
+        COUNT(*)                  AS total,
+        SUM(f_requests)           AS requests,
+        SUM(f_surveys)            AS surveys,
+        SUM(f_contacts)           AS contacts,
+        SUM(f_integrations)       AS integrations,
+        SUM(f_visibility)         AS visibility,
+        COALESCE(ROUND(AVG(breadth)::numeric, 2), 0) AS avg_breadth,
+        COUNT(*) FILTER (WHERE breadth = 0)  AS b0,
+        COUNT(*) FILTER (WHERE breadth = 1)  AS b1,
+        COUNT(*) FILTER (WHERE breadth = 2)  AS b2,
+        COUNT(*) FILTER (WHERE breadth >= 3) AS b3
+      FROM b`;
+    const r = await query(sql, [latest, ...params]);
+    const row = r.rows[0] || {};
+    const n = (v) => Number(v || 0);
+    res.json({
+      hasData: true,
+      asOf: latest,
+      total: n(row.total),
+      avgBreadth: Number(row.avg_breadth || 0),
+      features: [
+        { key: 'requests',     label: 'Review requests',  count: n(row.requests) },
+        { key: 'integrations', label: 'Integrations',     count: n(row.integrations) },
+        { key: 'contacts',     label: 'Contacts',         count: n(row.contacts) },
+        { key: 'surveys',      label: 'Surveys',          count: n(row.surveys) },
+        { key: 'visibility',   label: 'AI visibility',    count: n(row.visibility) },
+      ],
+      breadth: [
+        { label: '0 features',  count: n(row.b0) },
+        { label: '1 feature',   count: n(row.b1) },
+        { label: '2 features',  count: n(row.b2) },
+        { label: '3+ features', count: n(row.b3) },
+      ],
+    });
+  } catch (err) {
+    logger.error('analytics features error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load feature adoption' });
+  }
+});
+
+// ANALYTICS — Integration adoption & impact (P2 Part 2). Adoption by provider,
+// plus a side-by-side comparison of accounts with vs without an integration on
+// average requests, reviews, activation, and rating. This is a correlation view
+// (not causal), most useful as the account base grows. Filter-aware; ?format=csv.
+router.get('/analytics/integrations', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
+    const join = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+
+    const byProviderSql = `
+      SELECT provider, COUNT(*) AS accounts
+      FROM analytics_daily_snapshot s
+      ${join}, unnest(s.integrations_connected) AS provider
+      WHERE ${where}
+      GROUP BY provider
+      ORDER BY accounts DESC, provider`;
+
+    const impactSql = `
+      SELECT
+        (s.integration_count > 0)                  AS has_int,
+        COUNT(*)                                   AS accounts,
+        COALESCE(ROUND(AVG(s.requests_total)::numeric, 1), 0)  AS avg_requests,
+        COALESCE(ROUND(AVG(s.review_count)::numeric, 1), 0)    AS avg_reviews,
+        COUNT(*) FILTER (WHERE s.has_first_request) AS activated,
+        COALESCE(ROUND((SUM(s.avg_rating * s.review_count) / NULLIF(SUM(s.review_count), 0))::numeric, 2), 0) AS avg_rating
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE ${where}
+      GROUP BY (s.integration_count > 0)`;
+
+    const [byProvider, impact] = await Promise.all([
+      query(byProviderSql, [latest, ...params]),
+      query(impactSql, [latest, ...params]),
+    ]);
+
+    const n = (v) => Number(v || 0);
+    const blank = { accounts: 0, avgRequests: 0, avgReviews: 0, activated: 0, activationRate: null, avgRating: 0 };
+    const mapImpact = (row) => row ? {
+      accounts: n(row.accounts),
+      avgRequests: Number(row.avg_requests || 0),
+      avgReviews: Number(row.avg_reviews || 0),
+      activated: n(row.activated),
+      activationRate: n(row.accounts) > 0 ? n(row.activated) / n(row.accounts) : null,
+      avgRating: Number(row.avg_rating || 0),
+    } : Object.assign({}, blank);
+
+    const withRow = impact.rows.find((r) => r.has_int === true);
+    const withoutRow = impact.rows.find((r) => r.has_int === false);
+    const withInt = mapImpact(withRow);
+    const withoutInt = mapImpact(withoutRow);
+    const total = withInt.accounts + withoutInt.accounts;
+    const providers = byProvider.rows.map((r) => ({ provider: r.provider, accounts: n(r.accounts) }));
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const pct = (v) => (v === null ? '' : Math.round(v * 100) + '%');
+      const lines = [
+        ['Integration adoption', `as of ${latest}`],
+        [],
+        ['Provider', 'Accounts'],
+        ...providers.map((p) => [p.provider, p.accounts]),
+        [],
+        ['Metric', 'With integration', 'Without integration'],
+        ['Accounts', withInt.accounts, withoutInt.accounts],
+        ['Avg requests / account', withInt.avgRequests, withoutInt.avgRequests],
+        ['Avg reviews / account', withInt.avgReviews, withoutInt.avgReviews],
+        ['Activation rate', pct(withInt.activationRate), pct(withoutInt.activationRate)],
+        ['Avg rating', withInt.avgRating, withoutInt.avgRating],
+      ];
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-integrations-${latest}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({
+      hasData: true,
+      asOf: latest,
+      total,
+      withAny: withInt.accounts,
+      withAnyRate: total > 0 ? withInt.accounts / total : null,
+      providers,
+      impact: { withInt, withoutInt },
+    });
+  } catch (err) {
+    logger.error('analytics integrations error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load integration adoption' });
+  }
+});
