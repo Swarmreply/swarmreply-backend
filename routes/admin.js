@@ -1763,3 +1763,179 @@ router.get('/analytics/revenue', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to load revenue' });
   }
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — MRR movement & retention (P1 Part 2). Compares two snapshots
+// (period start vs end) and classifies each account's MRR change into the
+// new / expansion / contraction / churn waterfall, then derives GRR, NRR, and
+// churn. The segment filter is applied at the END snapshot (consistent with the
+// overview/revenue reports) with a LEFT JOIN back to the START snapshot for each
+// account's starting MRR — so churned accounts (present at end with mrr 0) are
+// counted by default. Returns hasData:false / reason when there aren't two
+// distinct snapshots spanning the period yet. Append ?format=csv to download.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/movement', requireAdmin, async (req, res) => {
+  try {
+    const range = await query('SELECT MIN(snapshot_date) AS earliest, MAX(snapshot_date) AS latest FROM analytics_daily_snapshot');
+    const earliest = range.rows[0] && range.rows[0].earliest;
+    const latest   = range.rows[0] && range.rows[0].latest;
+    if (!latest) return res.json({ hasData: false, reason: 'no_snapshots' });
+
+    const end = req.query.end || latest;
+    const period = String(req.query.period || '30d').toLowerCase();
+    const endD = new Date(end);
+    let startTarget;
+    if (period === 'all') {
+      startTarget = earliest;
+    } else if (period === 'mtd') {
+      startTarget = new Date(Date.UTC(endD.getUTCFullYear(), endD.getUTCMonth(), 1));
+    } else if (period === 'qtd') {
+      startTarget = new Date(Date.UTC(endD.getUTCFullYear(), Math.floor(endD.getUTCMonth() / 3) * 3, 1));
+    } else {
+      const days = { '7d': 7, '30d': 30, '90d': 90 }[period] || 30;
+      startTarget = new Date(endD); startTarget.setUTCDate(startTarget.getUTCDate() - days);
+    }
+    const startTargetStr = startTarget instanceof Date ? startTarget.toISOString().slice(0, 10) : startTarget;
+
+    const startRow = await query(
+      'SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot WHERE snapshot_date <= $1 AND snapshot_date < $2',
+      [startTargetStr, end]
+    );
+    const start = startRow.rows[0] && startRow.rows[0].d;
+    if (!start) return res.json({ hasData: false, reason: 'insufficient_history', earliest, latest, end });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 2);
+    const join = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const sql = `
+      WITH m AS (
+        SELECT s.customer_id,
+               COALESCE(ss.mrr_cents, 0) AS s_mrr,
+               s.mrr_cents               AS e_mrr
+        FROM analytics_daily_snapshot s
+        ${join}
+        LEFT JOIN analytics_daily_snapshot ss
+          ON ss.customer_id = s.customer_id AND ss.snapshot_date = $2
+        WHERE ${where}
+      )
+      SELECT
+        COALESCE(SUM(s_mrr), 0) AS start_mrr,
+        COALESCE(SUM(e_mrr), 0) AS end_mrr,
+        COALESCE(SUM(CASE WHEN s_mrr = 0 AND e_mrr > 0 THEN e_mrr ELSE 0 END), 0)              AS new_mrr,
+        COALESCE(SUM(CASE WHEN s_mrr > 0 AND e_mrr > s_mrr THEN e_mrr - s_mrr ELSE 0 END), 0)  AS expansion_mrr,
+        COALESCE(SUM(CASE WHEN s_mrr > 0 AND e_mrr < s_mrr AND e_mrr > 0 THEN s_mrr - e_mrr ELSE 0 END), 0) AS contraction_mrr,
+        COALESCE(SUM(CASE WHEN s_mrr > 0 AND e_mrr = 0 THEN s_mrr ELSE 0 END), 0)              AS churned_mrr,
+        COUNT(*) FILTER (WHERE s_mrr = 0 AND e_mrr > 0)                       AS new_count,
+        COUNT(*) FILTER (WHERE s_mrr > 0 AND e_mrr > s_mrr)                   AS expansion_count,
+        COUNT(*) FILTER (WHERE s_mrr > 0 AND e_mrr < s_mrr AND e_mrr > 0)     AS contraction_count,
+        COUNT(*) FILTER (WHERE s_mrr > 0 AND e_mrr = 0)                       AS churned_count,
+        COUNT(*) FILTER (WHERE s_mrr > 0)                                     AS start_count,
+        COUNT(*) FILTER (WHERE e_mrr > 0)                                     AS end_count
+      FROM m`;
+    const r = await query(sql, [end, start, ...params]);
+    const row = r.rows[0] || {};
+    const d = (v) => Number(v || 0) / 100;
+    const startMrr = d(row.start_mrr), endMrr = d(row.end_mrr);
+    const newM = d(row.new_mrr), exp = d(row.expansion_mrr), con = d(row.contraction_mrr), chu = d(row.churned_mrr);
+    const startCount = Number(row.start_count || 0), churnedCount = Number(row.churned_count || 0);
+    const ratio = (num) => (startMrr > 0 ? num / startMrr : null);
+
+    const payload = {
+      hasData: true, start, end, earliest, latest,
+      startMrr, endMrr, net: endMrr - startMrr,
+      new: newM, expansion: exp, contraction: con, churned: chu,
+      counts: {
+        new: Number(row.new_count || 0), expansion: Number(row.expansion_count || 0),
+        contraction: Number(row.contraction_count || 0), churned: churnedCount,
+        start: startCount, end: Number(row.end_count || 0),
+      },
+      retention: {
+        grr: ratio(startMrr - chu - con),
+        nrr: ratio(startMrr - chu - con + exp),
+        grossChurn: ratio(chu + con),
+        netChurn: ratio(chu + con - exp),
+        logoChurn: startCount > 0 ? churnedCount / startCount : null,
+        logoRetention: startCount > 0 ? 1 - churnedCount / startCount : null,
+      },
+    };
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const pct = (v) => (v === null ? '' : (v * 100).toFixed(1) + '%');
+      const lines = [
+        ['Window', `${start} to ${end}`],
+        [],
+        ['Component', 'MRR', 'Accounts'],
+        ['Starting MRR', startMrr.toFixed(2), startCount],
+        ['New', newM.toFixed(2), payload.counts.new],
+        ['Expansion', exp.toFixed(2), payload.counts.expansion],
+        ['Contraction', '-' + con.toFixed(2), payload.counts.contraction],
+        ['Churned', '-' + chu.toFixed(2), churnedCount],
+        ['Ending MRR', endMrr.toFixed(2), payload.counts.end],
+        [],
+        ['Metric', 'Value'],
+        ['Gross revenue retention', pct(payload.retention.grr)],
+        ['Net revenue retention', pct(payload.retention.nrr)],
+        ['Logo retention', pct(payload.retention.logoRetention)],
+        ['Gross MRR churn', pct(payload.retention.grossChurn)],
+        ['Net MRR churn', pct(payload.retention.netChurn)],
+      ];
+      const csv = lines.map((row2) => row2.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-mrr-movement-${start}_to_${end}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json(payload);
+  } catch (err) {
+    logger.error('analytics movement error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load MRR movement' });
+  }
+});
+
+// Cohort summary by signup month — accounts / paying / MRR per cohort, from the
+// latest snapshot, filter-aware. Month-over-month retention curves arrive once
+// there is multi-month snapshot history. Append ?format=csv to download.
+router.get('/analytics/cohorts', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params } = buildSnapshotFilter(req.query, 1);
+    const join = 'JOIN customers c ON c.id = s.customer_id';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const sql = `
+      SELECT to_char(c.created_at, 'YYYY-MM')        AS cohort,
+             COUNT(*)                                AS accounts,
+             COUNT(*) FILTER (WHERE s.mrr_cents > 0) AS paying,
+             COALESCE(SUM(s.mrr_cents), 0)           AS mrr_cents
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE ${where} AND c.created_at IS NOT NULL
+      GROUP BY to_char(c.created_at, 'YYYY-MM')
+      ORDER BY cohort DESC`;
+    const r = await query(sql, [latest, ...params]);
+    const cohorts = r.rows.map((x) => ({
+      cohort: x.cohort, accounts: Number(x.accounts),
+      paying: Number(x.paying), mrr: Number(x.mrr_cents) / 100,
+    }));
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const lines = [['Signup month', 'Accounts', 'Paying', 'Pct paying', 'MRR', 'ARR']];
+      cohorts.forEach((c) => lines.push([
+        c.cohort, c.accounts, c.paying,
+        c.accounts > 0 ? Math.round((c.paying / c.accounts) * 100) + '%' : '',
+        c.mrr.toFixed(2), (c.mrr * 12).toFixed(2),
+      ]));
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-cohorts-${latest}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({ hasData: true, asOf: latest, cohorts });
+  } catch (err) {
+    logger.error('analytics cohorts error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load cohorts' });
+  }
+});
