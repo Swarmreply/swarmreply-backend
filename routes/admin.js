@@ -13,6 +13,7 @@ const { authenticator } = require('otplib');
 const bcrypt  = require('bcryptjs');
 const QRCode  = require('qrcode');
 const { estimateMonthly, syncLocationBilling } = require('../services/locationBilling');
+const { buildSnapshotFilter } = require('../services/analyticsFilters');
 
 // ── ADMIN AUTH MIDDLEWARE ─────────────────────
 // Admin-panel tokens carry scope:'admin'. Customer tokens never do (they have
@@ -1575,5 +1576,96 @@ router.post('/demo', requireAdmin, async (req, res) => {
   } catch (err) {
     logger.error('Create demo error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS (P0 foundation) — reads analytics_daily_snapshot.
+// `filter-options` populates the Analytics filter bar (sourced from the live
+// tables so the bar works even before the first snapshot); `overview` applies
+// the active filter to the most recent snapshot. Both tolerate an empty
+// snapshot table (hasData:false) because the first daily snapshot runs after
+// this ships. All slicer SQL is compiled by services/analyticsFilters.js so
+// future reports share one definition of what can be filtered.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Distinct slicer values + snapshot freshness for the filter bar.
+router.get('/analytics/filter-options', requireAdmin, async (req, res) => {
+  try {
+    const [plans, statuses, verticals, sources, providers, cohorts, freshness] = await Promise.all([
+      query("SELECT DISTINCT plan FROM customers WHERE plan IS NOT NULL AND plan <> '' ORDER BY plan"),
+      query("SELECT DISTINCT status FROM customers WHERE status IS NOT NULL AND status <> '' ORDER BY status"),
+      query("SELECT DISTINCT business_type FROM customers WHERE business_type IS NOT NULL AND business_type <> '' ORDER BY business_type"),
+      query("SELECT DISTINCT utm_source FROM customers WHERE utm_source IS NOT NULL AND utm_source <> '' ORDER BY utm_source"),
+      query("SELECT DISTINCT provider FROM integrations WHERE provider IS NOT NULL AND provider <> '' ORDER BY provider"),
+      query("SELECT DISTINCT to_char(created_at, 'YYYY-MM') AS m FROM customers WHERE created_at IS NOT NULL ORDER BY m DESC"),
+      query("SELECT MAX(snapshot_date) AS latest, MAX(captured_at) AS captured, COUNT(DISTINCT snapshot_date) AS days, COUNT(*) AS rows FROM analytics_daily_snapshot"),
+    ]);
+    const f = freshness.rows[0] || {};
+    res.json({
+      plans:     plans.rows.map((r) => r.plan),
+      statuses:  statuses.rows.map((r) => r.status),
+      verticals: verticals.rows.map((r) => r.business_type),
+      sources:   sources.rows.map((r) => r.utm_source),
+      providers: providers.rows.map((r) => r.provider),
+      cohorts:   cohorts.rows.map((r) => r.m),
+      freshness: {
+        latestSnapshot: f.latest || null,
+        capturedAt:     f.captured || null,
+        snapshotDays:   Number(f.days || 0),
+        hasData:        Number(f.rows || 0) > 0,
+      },
+    });
+  } catch (err) {
+    logger.error('analytics filter-options error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load filter options' });
+  }
+});
+
+// Account counts for the active filter at the most recent (or given) snapshot.
+router.get('/analytics/overview', requireAdmin, async (req, res) => {
+  try {
+    let asOf = req.query.asOf;
+    if (!asOf) {
+      const latest = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+      asOf = latest.rows[0] && latest.rows[0].d;
+    }
+    if (!asOf) return res.json({ hasData: false, asOf: null });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
+    const join  = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const sql = `
+      SELECT
+        COUNT(*)                                                          AS accounts,
+        COUNT(*) FILTER (WHERE s.status = 'active')                       AS active,
+        COUNT(*) FILTER (WHERE s.is_paying)                               AS paying,
+        COUNT(*) FILTER (WHERE s.integration_count > 0)                   AS with_integration,
+        COUNT(*) FILTER (WHERE s.has_first_request OR s.has_first_review) AS activated,
+        COUNT(*) FILTER (WHERE s.onboarding_completed)                    AS onboarded,
+        COALESCE(SUM(s.location_count), 0)                                AS locations,
+        COALESCE(SUM(s.review_count), 0)                                  AS reviews,
+        COALESCE(ROUND(AVG(NULLIF(s.avg_rating, 0))::numeric, 2), 0)      AS avg_rating
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE ${where}`;
+    const r = await query(sql, [asOf, ...params]);
+    const row = r.rows[0] || {};
+    res.json({
+      hasData:         true,
+      asOf,
+      accounts:        Number(row.accounts || 0),
+      active:          Number(row.active || 0),
+      paying:          Number(row.paying || 0),
+      withIntegration: Number(row.with_integration || 0),
+      activated:       Number(row.activated || 0),
+      onboarded:       Number(row.onboarded || 0),
+      locations:       Number(row.locations || 0),
+      reviews:         Number(row.reviews || 0),
+      avgRating:       Number(row.avg_rating || 0),
+    });
+  } catch (err) {
+    logger.error('analytics overview error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load analytics overview' });
   }
 });
