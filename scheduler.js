@@ -15,6 +15,7 @@ const { runWeeklyDirectoryScan } = require('./services/directoryCheckService');
 const { runDueCompetitorScans } = require('./scheduler.competitors');
 const { runDueRankChecks } = require('./scheduler.rank');
 const { generateMonthlyReports } = require('./services/reportService');
+const { runDailySnapshot } = require('./scheduler.snapshot');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -25,6 +26,20 @@ const { captureError } = require('./utils/sentry');
  */
 function startScheduler() {
   logger.info('Starting SwarmReply scheduler...');
+
+  // ============================================
+  // JOB -2: Analytics daily snapshot — roll up every account's state into
+  // analytics_daily_snapshot. Runs at 02:30 (quiet, before the other dailies).
+  // This is the irreversible capture that powers trends, cohorts, and as-of views.
+  // ============================================
+  cron.schedule('30 2 * * *', async () => {
+    try {
+      await runDailySnapshot();
+    } catch (error) {
+      logger.error('Scheduler: analytics daily snapshot failed:', error.message);
+      captureError(error, { job: 'analytics-daily-snapshot' });
+    }
+  });
 
   // ============================================
   // JOB -1: Daily listings sync — fetch each platform,
