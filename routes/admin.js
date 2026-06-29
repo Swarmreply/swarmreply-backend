@@ -2230,3 +2230,116 @@ router.get('/analytics/integrations', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to load integration adoption' });
   }
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Messaging deliverability & opt-outs (P3 Part 1). The opt-out
+// rate and its trend (the A2P/TCPA canary) come from the snapshot's
+// opted_out_count / contact_count, which already accrue daily. Send-success is
+// read live from review_requests status. Filter-aware; ?format=csv. An elevated
+// opt-out rate is flagged as a watch signal, not a hard rule.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/deliverability', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
+    const join = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const filterSql = clauses.length ? (' AND ' + clauses.join(' AND ')) : '';
+
+    // Current opt-out position (latest snapshot).
+    const currentSql = `
+      SELECT
+        COALESCE(SUM(s.contact_count), 0)            AS contacts,
+        COALESCE(SUM(s.opted_out_count), 0)          AS opted_out,
+        COUNT(*) FILTER (WHERE s.opted_out_count > 0) AS accounts_with_optouts,
+        COUNT(*)                                      AS accounts
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE s.snapshot_date = $1${filterSql}`;
+
+    // Send success/failure across the filtered customer set (live review_requests).
+    const sendSql = `
+      SELECT
+        COUNT(*) FILTER (WHERE rr.status IN ('sent','complete','completed','pending_approval')) AS sent_ok,
+        COUNT(*) FILTER (WHERE rr.status IN ('failed','error'))                                 AS failed,
+        COUNT(*)                                                                                 AS total
+      FROM review_requests rr
+      WHERE rr.customer_id IN (
+        SELECT s.customer_id FROM analytics_daily_snapshot s ${join}
+        WHERE s.snapshot_date = $1${filterSql}
+      )`;
+
+    // Opt-out-rate trend over the last ~90 days of snapshots (filter-aware).
+    const trendStart = new Date(latest); trendStart.setUTCDate(trendStart.getUTCDate() - 90);
+    const trendStartStr = trendStart.toISOString().slice(0, 10);
+    const trendSql = `
+      SELECT s.snapshot_date AS date,
+             COALESCE(SUM(s.contact_count), 0)   AS contacts,
+             COALESCE(SUM(s.opted_out_count), 0) AS opted_out
+      FROM analytics_daily_snapshot s
+      ${join}
+      WHERE s.snapshot_date >= $1${filterSql}
+      GROUP BY s.snapshot_date
+      ORDER BY s.snapshot_date`;
+
+    const [current, send, trend] = await Promise.all([
+      query(currentSql, [latest, ...params]),
+      query(sendSql, [latest, ...params]),
+      query(trendSql, [trendStartStr, ...params]),
+    ]);
+
+    const c = current.rows[0] || {};
+    const n = (v) => Number(v || 0);
+    const contacts = n(c.contacts), optedOut = n(c.opted_out);
+    const optOutRate = contacts > 0 ? optedOut / contacts : null;
+    const s = send.rows[0] || {};
+    const sentOk = n(s.sent_ok), failed = n(s.failed);
+    const successRate = (sentOk + failed) > 0 ? sentOk / (sentOk + failed) : null;
+
+    const WATCH = 0.03; // 3% opt-out rate = watch signal (not a hard limit)
+    const trendArr = trend.rows.map((r) => {
+      const ct = n(r.contacts), oo = n(r.opted_out);
+      return { date: r.date, contacts: ct, optedOut: oo, rate: ct > 0 ? oo / ct : null };
+    });
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const pct = (v) => (v === null ? '' : (v * 100).toFixed(2) + '%');
+      const lines = [
+        ['Deliverability', `as of ${latest}`],
+        [],
+        ['Metric', 'Value'],
+        ['Contacts', contacts],
+        ['Opted out', optedOut],
+        ['Opt-out rate', pct(optOutRate)],
+        ['Send-success rate', pct(successRate)],
+        ['Failed sends', failed],
+        [],
+        ['Date', 'Contacts', 'Opted out', 'Opt-out rate'],
+        ...trendArr.map((t) => [t.date, t.contacts, t.optedOut, pct(t.rate)]),
+      ];
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-deliverability-${latest}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({
+      hasData: true,
+      asOf: latest,
+      contacts,
+      optedOut,
+      optOutRate,
+      accountsWithOptouts: n(c.accounts_with_optouts),
+      accounts: n(c.accounts),
+      flag: optOutRate !== null && optOutRate > WATCH ? 'elevated' : 'ok',
+      watchThreshold: WATCH,
+      send: { sentOk, failed, total: n(s.total), successRate },
+      trend: trendArr,
+    });
+  } catch (err) {
+    logger.error('analytics deliverability error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load deliverability' });
+  }
+});
