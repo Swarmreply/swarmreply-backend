@@ -2343,3 +2343,204 @@ router.get('/analytics/deliverability', requireAdmin, async (req, res) => {
     res.status(500).json({ error: 'Failed to load deliverability' });
   }
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Customer health scoreboard (P3 Part 2). A transparent, rule-based
+// score (0-100) from snapshot signals, bucketed green/yellow/red, with billing
+// and tenure overrides. Returns the distribution (counts + MRR per bucket) and
+// the at-risk list (red+yellow, highest-MRR first). Filter-aware; ?format=csv.
+//
+// Rubric: activated +30, has requests +15, has reviews +15, integration +10,
+// paying +25, healthy opt-out +5 (elevated opt-out -10). Overrides: cancelled/
+// past_due/suspended -> red; brand-new (<14d) & not activated -> yellow (ramping).
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/health', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params } = buildSnapshotFilter(req.query, 1);
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const cte = `
+      WITH base AS (
+        SELECT s.customer_id, c.name, s.status, s.is_paying, s.has_first_request,
+               s.requests_total, s.review_count, s.has_integration,
+               s.opted_out_count, s.contact_count, s.account_age_days, s.mrr_cents
+        FROM analytics_daily_snapshot s
+        JOIN customers c ON c.id = s.customer_id
+        WHERE ${where}
+      ),
+      scored AS (
+        SELECT *,
+          ( CASE WHEN has_first_request THEN 30 ELSE 0 END
+          + CASE WHEN requests_total > 0 THEN 15 ELSE 0 END
+          + CASE WHEN review_count > 0 THEN 15 ELSE 0 END
+          + CASE WHEN has_integration THEN 10 ELSE 0 END
+          + CASE WHEN is_paying THEN 25 ELSE 0 END
+          + CASE WHEN contact_count = 0 OR opted_out_count::float / NULLIF(contact_count,0) < 0.03 THEN 5 ELSE 0 END
+          - CASE WHEN contact_count > 0 AND opted_out_count::float / NULLIF(contact_count,0) >= 0.03 THEN 10 ELSE 0 END
+          ) AS score
+        FROM base
+      ),
+      bucketed AS (
+        SELECT *,
+          CASE
+            WHEN status IN ('cancelled','canceled','past_due','suspended','churned') THEN 'red'
+            WHEN account_age_days < 14 AND NOT has_first_request THEN 'yellow'
+            WHEN score >= 70 THEN 'green'
+            WHEN score >= 40 THEN 'yellow'
+            ELSE 'red'
+          END AS health
+        FROM scored
+      )`;
+
+    const [dist, list] = await Promise.all([
+      query(`${cte} SELECT health, COUNT(*) AS accounts, COALESCE(SUM(mrr_cents),0) AS mrr_cents FROM bucketed GROUP BY health`, [latest, ...params]),
+      query(`${cte} SELECT customer_id, name, status, is_paying, has_first_request, requests_total, review_count, opted_out_count, contact_count, account_age_days, mrr_cents, score, health FROM bucketed WHERE health IN ('red','yellow') ORDER BY mrr_cents DESC, score ASC LIMIT 100`, [latest, ...params]),
+    ]);
+
+    const byHealth = { green: { accounts: 0, mrr: 0 }, yellow: { accounts: 0, mrr: 0 }, red: { accounts: 0, mrr: 0 } };
+    dist.rows.forEach((r) => { if (byHealth[r.health]) byHealth[r.health] = { accounts: Number(r.accounts), mrr: Number(r.mrr_cents) / 100 }; });
+
+    const reasonFor = (r) => {
+      if (['cancelled','canceled','past_due','suspended','churned'].includes(r.status)) return 'Billing: ' + r.status;
+      if (!r.has_first_request) return Number(r.account_age_days) < 14 ? 'New / ramping' : 'Not activated';
+      if (!r.is_paying) return 'Not paying';
+      if (Number(r.requests_total) === 0 && Number(r.review_count) === 0) return 'No engagement';
+      if (Number(r.contact_count) > 0 && Number(r.opted_out_count) / Number(r.contact_count) >= 0.03) return 'High opt-out rate';
+      return 'Low engagement';
+    };
+    const atRisk = list.rows.map((r) => ({
+      name: r.name, health: r.health, score: Number(r.score),
+      mrr: Number(r.mrr_cents) / 100, reason: reasonFor(r),
+    }));
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const lines = [['Health', 'Accounts', 'MRR']];
+      ['green','yellow','red'].forEach((h) => lines.push([h, byHealth[h].accounts, byHealth[h].mrr.toFixed(2)]));
+      lines.push([], ['At-risk account', 'Health', 'Score', 'MRR', 'Primary risk']);
+      atRisk.forEach((a) => lines.push([a.name, a.health, a.score, a.mrr.toFixed(2), a.reason]));
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-health-${latest}.csv"`);
+      return res.send(csv);
+    }
+
+    const totalMrr = byHealth.green.mrr + byHealth.yellow.mrr + byHealth.red.mrr;
+    res.json({
+      hasData: true, asOf: latest,
+      total: byHealth.green.accounts + byHealth.yellow.accounts + byHealth.red.accounts,
+      byHealth, mrrAtRisk: byHealth.red.mrr, totalMrr,
+      atRisk,
+    });
+  } catch (err) {
+    logger.error('analytics health error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load health scoreboard' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Expansion & plan-limit signals (P3 Part 2). Surfaces the real
+// upsell triggers: SMS-quota pressure (campaign_usage) and team-seat pressure
+// (team_members vs plan: starter 3 / growth 10 / agency unlimited), plus the
+// location footprint on the graduated-pricing curve. Returns summary counts,
+// the footprint distribution, and an upsell-candidate list. Filter-aware; ?csv.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/expansion', requireAdmin, async (req, res) => {
+  try {
+    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params } = buildSnapshotFilter(req.query, 1);
+    const where = ['s.snapshot_date = $1'].concat(clauses).join(' AND ');
+    const cte = `
+      WITH base AS (
+        SELECT s.customer_id, c.name, c.plan, s.location_count
+        FROM analytics_daily_snapshot s
+        JOIN customers c ON c.id = s.customer_id
+        WHERE ${where}
+      ),
+      tm AS (SELECT customer_id, COUNT(*) AS seats FROM team_members WHERE status <> 'suspended' GROUP BY customer_id),
+      j AS (
+        SELECT b.*,
+          COALESCE(cu.sms_sent, 0)   AS sms_sent,
+          COALESCE(cu.sms_limit, 1000) AS sms_limit,
+          COALESCE(tm.seats, 0)      AS seats,
+          CASE b.plan WHEN 'starter' THEN 3 WHEN 'growth' THEN 10 ELSE NULL END AS seat_limit
+        FROM base b
+        LEFT JOIN campaign_usage cu ON cu.customer_id = b.customer_id
+        LEFT JOIN tm ON tm.customer_id = b.customer_id
+      )`;
+
+    const [summary, list] = await Promise.all([
+      query(`${cte}
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE sms_limit > 0 AND sms_sent::float / sms_limit >= 0.8 AND sms_sent < sms_limit) AS sms_near,
+          COUNT(*) FILTER (WHERE sms_limit > 0 AND sms_sent >= sms_limit) AS sms_over,
+          COUNT(*) FILTER (WHERE seat_limit IS NOT NULL AND seats >= seat_limit) AS seats_at,
+          COUNT(*) FILTER (WHERE location_count = 1) AS loc1,
+          COUNT(*) FILTER (WHERE location_count = 2) AS loc2,
+          COUNT(*) FILTER (WHERE location_count BETWEEN 3 AND 5) AS loc35,
+          COUNT(*) FILTER (WHERE location_count BETWEEN 6 AND 10) AS loc610,
+          COUNT(*) FILTER (WHERE location_count >= 11) AS loc11
+        FROM j`, [latest, ...params]),
+      query(`${cte}
+        SELECT name, plan, location_count, sms_sent, sms_limit, seats, seat_limit
+        FROM j
+        WHERE (sms_limit > 0 AND sms_sent::float / sms_limit >= 0.8)
+           OR (seat_limit IS NOT NULL AND seats >= seat_limit)
+        ORDER BY (CASE WHEN sms_limit > 0 THEN sms_sent::float / sms_limit ELSE 0 END) DESC
+        LIMIT 100`, [latest, ...params]),
+    ]);
+
+    const s = summary.rows[0] || {};
+    const n = (v) => Number(v || 0);
+    const candidates = list.rows.map((r) => {
+      const smsPct = n(r.sms_limit) > 0 ? n(r.sms_sent) / n(r.sms_limit) : null;
+      const seatFull = r.seat_limit !== null && n(r.seats) >= n(r.seat_limit);
+      let signal = '';
+      if (smsPct !== null && n(r.sms_sent) >= n(r.sms_limit)) signal = 'SMS quota reached';
+      else if (smsPct !== null && smsPct >= 0.8) signal = 'SMS quota ' + Math.round(smsPct * 100) + '%';
+      if (seatFull) signal = signal ? signal + ' · seats full' : 'Team seats full (' + n(r.seats) + '/' + n(r.seat_limit) + ')';
+      return {
+        name: r.name, plan: r.plan, locations: n(r.location_count),
+        smsSent: n(r.sms_sent), smsLimit: n(r.sms_limit), smsPct,
+        seats: n(r.seats), seatLimit: r.seat_limit, signal,
+      };
+    });
+
+    const footprint = [
+      { label: '1 location', count: n(s.loc1) },
+      { label: '2 locations', count: n(s.loc2) },
+      { label: '3-5 locations', count: n(s.loc35) },
+      { label: '6-10 locations', count: n(s.loc610) },
+      { label: '11+ locations', count: n(s.loc11) },
+    ];
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const lines = [
+        ['Plan-limit pressure', `as of ${latest}`], [],
+        ['Signal', 'Accounts'],
+        ['SMS quota 80%+', n(s.sms_near)], ['SMS quota reached', n(s.sms_over)], ['Team seats full', n(s.seats_at)],
+        [], ['Upsell candidate', 'Plan', 'Locations', 'SMS sent', 'SMS limit', 'Seats', 'Seat limit', 'Signal'],
+        ...candidates.map((c) => [c.name, c.plan, c.locations, c.smsSent, c.smsLimit, c.seats, c.seatLimit === null ? 'unlimited' : c.seatLimit, c.signal]),
+      ];
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-expansion-${latest}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({
+      hasData: true, asOf: latest, total: n(s.total),
+      smsNear: n(s.sms_near), smsOver: n(s.sms_over), seatsAtLimit: n(s.seats_at),
+      footprint, candidates,
+    });
+  } catch (err) {
+    logger.error('analytics expansion error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load expansion signals' });
+  }
+});
