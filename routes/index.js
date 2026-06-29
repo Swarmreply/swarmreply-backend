@@ -1229,7 +1229,7 @@ router.post('/customers/register', async (req, res) => {
     const jwt = require('jsonwebtoken');
     const { v4: uuidv4 } = require('uuid');
     const bcrypt = require('bcryptjs');
-    const { name, email, password, marketingOptIn, agreedToTerms } = req.body || {};
+    const { name, email, password, marketingOptIn, agreedToTerms, attribution } = req.body || {};
 
     const cleanEmail = (email || '').trim().toLowerCase();
     const cleanName  = (name || '').trim();
@@ -1252,6 +1252,17 @@ router.post('/customers/register', async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 12);
 
+    // First-touch acquisition attribution (sent by signup.html via attribution.js).
+    // Ordered to match $4..$12 in the INSERT/UPDATE below: signup_source, utm_source,
+    // utm_medium, utm_campaign, utm_term, utm_content, gclid, referrer, landing_path.
+    const _attr = (attribution && typeof attribution === 'object') ? attribution : {};
+    const _clip = (v) => (v == null ? null : String(v).slice(0, 300));
+    const attrVals = [
+      _clip(_attr.signup_source), _clip(_attr.utm_source), _clip(_attr.utm_medium),
+      _clip(_attr.utm_campaign), _clip(_attr.utm_term), _clip(_attr.utm_content),
+      _clip(_attr.gclid), _clip(_attr.referrer), _clip(_attr.landing_path),
+    ];
+
     // Existing customer row? Active = log in. Pending = resume (refresh name/password).
     const existing = await query('SELECT id, status FROM customers WHERE LOWER(email) = $1', [cleanEmail]);
     let customerId;
@@ -1262,15 +1273,28 @@ router.post('/customers/register', async (req, res) => {
       }
       customerId = row.id;
       await query(
-        'UPDATE customers SET name = $1, password_hash = $2, updated_at = NOW() WHERE id = $3',
-        [cleanName, passwordHash, customerId]
+        `UPDATE customers SET name = $1, password_hash = $2, updated_at = NOW(),
+           signup_source = COALESCE(signup_source, $4),
+           utm_source    = COALESCE(utm_source, $5),
+           utm_medium    = COALESCE(utm_medium, $6),
+           utm_campaign  = COALESCE(utm_campaign, $7),
+           utm_term      = COALESCE(utm_term, $8),
+           utm_content   = COALESCE(utm_content, $9),
+           gclid         = COALESCE(gclid, $10),
+           referrer      = COALESCE(referrer, $11),
+           landing_path  = COALESCE(landing_path, $12)
+         WHERE id = $3`,
+        [cleanName, passwordHash, customerId, ...attrVals]
       );
     } else {
       const created = await query(
-        `INSERT INTO customers (email, name, password_hash, status, plan, welcome_email_sent)
-         VALUES ($1, $2, $3, 'pending', 'starter', false)
+        `INSERT INTO customers (email, name, password_hash, status, plan, welcome_email_sent,
+                                signup_source, utm_source, utm_medium, utm_campaign, utm_term,
+                                utm_content, gclid, referrer, landing_path)
+         VALUES ($1, $2, $3, 'pending', 'starter', false,
+                 $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING id`,
-        [cleanEmail, cleanName, passwordHash]
+        [cleanEmail, cleanName, passwordHash, ...attrVals]
       );
       customerId = created.rows[0].id;
     }
