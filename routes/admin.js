@@ -1592,7 +1592,7 @@ router.post('/demo', requireAdmin, async (req, res) => {
 // Distinct slicer values + snapshot freshness for the filter bar.
 router.get('/analytics/filter-options', requireAdmin, async (req, res) => {
   try {
-    const [plans, statuses, verticals, sources, providers, cohorts, freshness] = await Promise.all([
+    const [plans, statuses, verticals, sources, providers, cohorts, freshness, dates] = await Promise.all([
       query("SELECT DISTINCT plan FROM customers WHERE plan IS NOT NULL AND plan <> '' ORDER BY plan"),
       query("SELECT DISTINCT status FROM customers WHERE status IS NOT NULL AND status <> '' ORDER BY status"),
       query("SELECT DISTINCT business_type FROM customers WHERE business_type IS NOT NULL AND business_type <> '' ORDER BY business_type"),
@@ -1600,6 +1600,7 @@ router.get('/analytics/filter-options', requireAdmin, async (req, res) => {
       query("SELECT DISTINCT provider FROM integrations WHERE provider IS NOT NULL AND provider <> '' ORDER BY provider"),
       query("SELECT DISTINCT to_char(created_at, 'YYYY-MM') AS m FROM customers WHERE created_at IS NOT NULL ORDER BY m DESC"),
       query("SELECT MAX(snapshot_date) AS latest, MAX(captured_at) AS captured, COUNT(DISTINCT snapshot_date) AS days, COUNT(*) AS rows FROM analytics_daily_snapshot"),
+      query("SELECT DISTINCT snapshot_date FROM analytics_daily_snapshot ORDER BY snapshot_date DESC LIMIT 180"),
     ]);
     const f = freshness.rows[0] || {};
     res.json({
@@ -1615,6 +1616,7 @@ router.get('/analytics/filter-options', requireAdmin, async (req, res) => {
         snapshotDays:   Number(f.days || 0),
         hasData:        Number(f.rows || 0) > 0,
       },
+      availableDates: dates.rows.map((r) => r.snapshot_date),
     });
   } catch (err) {
     logger.error('analytics filter-options error: ' + err.message);
@@ -1625,11 +1627,7 @@ router.get('/analytics/filter-options', requireAdmin, async (req, res) => {
 // Account counts for the active filter at the most recent (or given) snapshot.
 router.get('/analytics/overview', requireAdmin, async (req, res) => {
   try {
-    let asOf = req.query.asOf;
-    if (!asOf) {
-      const latest = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-      asOf = latest.rows[0] && latest.rows[0].d;
-    }
+    const asOf = await resolveAsOf(req.query.asOf);
     if (!asOf) return res.json({ hasData: false, asOf: null });
 
     const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
@@ -1676,6 +1674,18 @@ function csvCell(v) {
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
+// ── As-of resolver ────────────────────────────────────────────────────────
+// The effective snapshot date for a report: the most recent snapshot on or
+// before ?asOf (the as-of date picker), or the latest snapshot when asOf is
+// absent or malformed. One param rewinds every report to a past day.
+async function resolveAsOf(rawAsOf) {
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(String(rawAsOf || ''));
+  const r = valid
+    ? await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot WHERE snapshot_date <= $1', [rawAsOf])
+    : await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
+  return r.rows[0] && r.rows[0].d;
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // ANALYTICS — Revenue (P1 Part 1). Current-state MRR/ARR/ARPU + breakdowns by
 // plan / vertical / acquisition source, read from the most recent snapshot and
@@ -1686,11 +1696,7 @@ function csvCell(v) {
 // ══════════════════════════════════════════════════════════════════════════
 router.get('/analytics/revenue', requireAdmin, async (req, res) => {
   try {
-    let asOf = req.query.asOf;
-    if (!asOf) {
-      const latest = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-      asOf = latest.rows[0] && latest.rows[0].d;
-    }
+    const asOf = await resolveAsOf(req.query.asOf);
     if (!asOf) return res.json({ hasData: false, asOf: null });
 
     const { clauses, params } = buildSnapshotFilter(req.query, 1);
@@ -1781,7 +1787,7 @@ router.get('/analytics/movement', requireAdmin, async (req, res) => {
     const latest   = range.rows[0] && range.rows[0].latest;
     if (!latest) return res.json({ hasData: false, reason: 'no_snapshots' });
 
-    const end = req.query.end || latest;
+    const end = req.query.end || req.query.asOf || latest;
     const period = String(req.query.period || '30d').toLowerCase();
     const endD = new Date(end);
     let startTarget;
@@ -1897,8 +1903,7 @@ router.get('/analytics/movement', requireAdmin, async (req, res) => {
 // there is multi-month snapshot history. Append ?format=csv to download.
 router.get('/analytics/cohorts', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params } = buildSnapshotFilter(req.query, 1);
@@ -1949,8 +1954,7 @@ router.get('/analytics/cohorts', requireAdmin, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.get('/analytics/activation', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params } = buildSnapshotFilter(req.query, 1);
@@ -2020,8 +2024,7 @@ router.get('/analytics/activation', requireAdmin, async (req, res) => {
 // request→review figure is labelled a ratio rather than strict attribution.
 router.get('/analytics/outcomes', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
@@ -2076,8 +2079,7 @@ router.get('/analytics/outcomes', requireAdmin, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.get('/analytics/features', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
@@ -2143,8 +2145,7 @@ router.get('/analytics/features', requireAdmin, async (req, res) => {
 // (not causal), most useful as the account base grows. Filter-aware; ?format=csv.
 router.get('/analytics/integrations', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
@@ -2240,8 +2241,7 @@ router.get('/analytics/integrations', requireAdmin, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.get('/analytics/deliverability', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
@@ -2356,8 +2356,7 @@ router.get('/analytics/deliverability', requireAdmin, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.get('/analytics/health', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params } = buildSnapshotFilter(req.query, 1);
@@ -2449,8 +2448,7 @@ router.get('/analytics/health', requireAdmin, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 router.get('/analytics/expansion', requireAdmin, async (req, res) => {
   try {
-    const latestRow = await query('SELECT MAX(snapshot_date) AS d FROM analytics_daily_snapshot');
-    const latest = latestRow.rows[0] && latestRow.rows[0].d;
+    const latest = await resolveAsOf(req.query.asOf);
     if (!latest) return res.json({ hasData: false });
 
     const { clauses, params } = buildSnapshotFilter(req.query, 1);
@@ -2542,5 +2540,114 @@ router.get('/analytics/expansion', requireAdmin, async (req, res) => {
   } catch (err) {
     logger.error('analytics expansion error: ' + err.message);
     res.status(500).json({ error: 'Failed to load expansion signals' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYTICS — Support & deflection (P4 Part 1). Two channels:
+//  • In-app AI assistant — support_interactions (escalated=true -> ticket form).
+//    Accrues from the P4 deploy forward; empty until customers ask questions.
+//  • Webchat (Wallabee) — webchat_sessions joined via locations; a row in
+//    webchat_handoffs means the AI escalated that session to a human.
+// Deflection = share resolved by AI without a human. Filter-aware; ?format=csv.
+// ══════════════════════════════════════════════════════════════════════════
+router.get('/analytics/support', requireAdmin, async (req, res) => {
+  try {
+    const latest = await resolveAsOf(req.query.asOf);
+    if (!latest) return res.json({ hasData: false });
+
+    const { clauses, params, joinCustomers } = buildSnapshotFilter(req.query, 1);
+    const join = joinCustomers ? 'JOIN customers c ON c.id = s.customer_id' : '';
+    const filterSql = clauses.length ? (' AND ' + clauses.join(' AND ')) : '';
+    const custSub = `SELECT s.customer_id FROM analytics_daily_snapshot s ${join} WHERE s.snapshot_date = $1${filterSql}`;
+    const wk = new Date(latest); wk.setUTCDate(wk.getUTCDate() - 84);
+    const wkStr = wk.toISOString().slice(0, 10);
+    const wkParam = `$${2 + params.length}`;
+
+    const wcAggSql = `
+      SELECT COUNT(DISTINCT ws.id) AS sessions, COUNT(DISTINCT wh.session_id) AS escalated
+      FROM webchat_sessions ws
+      JOIN locations l ON l.id = ws.location_id
+      LEFT JOIN webchat_handoffs wh ON wh.session_id = ws.id
+      WHERE l.customer_id IN (${custSub})`;
+    const wcMsgSql = `
+      SELECT wm.sender, COUNT(*) AS n
+      FROM webchat_messages wm
+      JOIN webchat_sessions ws ON ws.id = wm.session_id
+      JOIN locations l ON l.id = ws.location_id
+      WHERE l.customer_id IN (${custSub})
+      GROUP BY wm.sender`;
+    const wcTrendSql = `
+      SELECT date_trunc('week', ws.created_at)::date AS week,
+             COUNT(DISTINCT ws.id) AS sessions, COUNT(DISTINCT wh.session_id) AS handoffs
+      FROM webchat_sessions ws
+      JOIN locations l ON l.id = ws.location_id
+      LEFT JOIN webchat_handoffs wh ON wh.session_id = ws.id
+      WHERE l.customer_id IN (${custSub}) AND ws.created_at >= ${wkParam}
+      GROUP BY 1 ORDER BY 1`;
+    const agAggSql = `
+      SELECT COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE escalated) AS escalated,
+             COUNT(*) FILTER (WHERE rate_limited) AS rate_limited
+      FROM support_interactions WHERE customer_id IN (${custSub})`;
+    const agTrendSql = `
+      SELECT date_trunc('week', created_at)::date AS week,
+             COUNT(*) AS total, COUNT(*) FILTER (WHERE escalated) AS escalated
+      FROM support_interactions
+      WHERE customer_id IN (${custSub}) AND created_at >= ${wkParam}
+      GROUP BY 1 ORDER BY 1`;
+
+    const fp = [latest, ...params];
+    const fpT = [latest, ...params, wkStr];
+    const [wcAgg, wcMsg, wcTrend, agAgg, agTrend] = await Promise.all([
+      query(wcAggSql, fp), query(wcMsgSql, fp), query(wcTrendSql, fpT),
+      query(agAggSql, fp), query(agTrendSql, fpT),
+    ]);
+
+    const n = (v) => Number(v || 0);
+    const wc = wcAgg.rows[0] || {};
+    const wcSessions = n(wc.sessions), wcEsc = n(wc.escalated);
+    const msg = { bot: 0, visitor: 0, agent: 0, total: 0 };
+    wcMsg.rows.forEach((r) => {
+      const c = n(r.n); msg.total += c;
+      if (r.sender === 'bot') msg.bot += c;
+      else if (r.sender === 'agent') msg.agent += c;
+      else msg.visitor += c;
+    });
+    const ag = agAgg.rows[0] || {};
+    const agTotal = n(ag.total), agEsc = n(ag.escalated);
+
+    const webchat = {
+      sessions: wcSessions, escalated: wcEsc,
+      deflectionRate: wcSessions > 0 ? (wcSessions - wcEsc) / wcSessions : null,
+      messages: msg,
+      trend: wcTrend.rows.map((r) => ({ week: r.week, sessions: n(r.sessions), handoffs: n(r.handoffs) })),
+    };
+    const agent = {
+      total: agTotal, escalated: agEsc, rateLimited: n(ag.rate_limited),
+      deflectionRate: agTotal > 0 ? (agTotal - agEsc) / agTotal : null,
+      trend: agTrend.rows.map((r) => ({ week: r.week, total: n(r.total), escalated: n(r.escalated) })),
+    };
+
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      const pct = (v) => (v === null ? '' : (v * 100).toFixed(1) + '%');
+      const lines = [
+        ['Support & deflection', `as of ${latest}`], [],
+        ['AI support assistant (in-app)', ''],
+        ['Questions handled', agTotal], ['Escalated to human', agEsc], ['Rate-limited', n(ag.rate_limited)], ['Deflection rate', pct(agent.deflectionRate)], [],
+        ['Webchat (Wallabee)', ''],
+        ['Sessions', wcSessions], ['Escalated (handoffs)', wcEsc], ['Deflection rate', pct(webchat.deflectionRate)],
+        ['AI messages', msg.bot], ['Visitor messages', msg.visitor], ['Human-agent messages', msg.agent],
+      ];
+      const csv = lines.map((row) => row.map(csvCell).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="swarmreply-support-${latest}.csv"`);
+      return res.send(csv);
+    }
+
+    res.json({ hasData: true, asOf: latest, agent, webchat });
+  } catch (err) {
+    logger.error('analytics support error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load support metrics' });
   }
 });
