@@ -237,12 +237,15 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/review/')) return next();
   // Public webchat widget endpoints
   if (req.path.startsWith('/api/webchat/config') || req.path.startsWith('/api/webchat/session/')) return next();
+  // Twilio webhooks (validated by X-Twilio-Signature instead)
+  if (req.path.startsWith('/api/sms/webhook/') || req.path === '/api/campaigns/webhook/delivery') return next();
   verifyCsrf(req, res, next);
 });
 
 app.use('/api/admin/login', adminLimiter)
 app.use('/api/webchat', webchatRoutes);
 app.use('/api/listings', require('./routes/listings'));
+app.use('/api', require('./routes/sms'));
 app.use('/api', routes);
 app.use('/api/admin', adminRoutes);
 

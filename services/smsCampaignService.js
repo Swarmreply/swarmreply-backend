@@ -1,5 +1,6 @@
 // ============================================
 const { smsEnabled } = require('./smsGate');
+const { resolveSender } = require('./smsSenderService');
 // services/smsCampaignService.js
 // SMS Marketing Campaigns
 //
@@ -433,6 +434,12 @@ async function sendCampaignBatch(campaignId, locationId, message) {
   const twilio = getTwilio();
   if (!twilio) throw new Error('Twilio not configured');
 
+  // Campaigns go out from the customer's own verified toll-free number only.
+  const sender = await resolveSender({ locationId });
+  if (!sender.from) {
+    throw new Error('Your texting number is not approved yet. Finish "Business texting" in Settings — campaigns can be sent once carriers approve it.');
+  }
+
   // Get pending sends in batches
   let offset = 0;
   let totalSent = 0, totalFailed = 0;
@@ -451,9 +458,9 @@ async function sendCampaignBatch(campaignId, locationId, message) {
       try {
         const msg = await twilio.messages.create({
           body:           message,
-          from:           process.env.TWILIO_FROM_NUMBER,
+          from:           sender.from,
           to:             send.phone,
-          statusCallback: `${process.env.BACKEND_URL}/api/campaigns/webhook/delivery`
+          statusCallback: `${process.env.BACKEND_URL}/api/sms/webhook/status`
         });
 
         await query(

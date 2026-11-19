@@ -1,5 +1,5 @@
 // ============================================
-const { sendText } = require('./smsGate');
+const { sendText, smsErrorMessage } = require('./smsGate');
 // services/npsService.js
 // NPS / Post-Visit Survey Engine
 //
@@ -173,10 +173,8 @@ async function sendSurvey({ locationId, contact, channel, triggeredBy = 'manual'
         survey_link:   surveyUrl
       });
 
-      const r = await sendText({ to: contact.phone, body: smsText, from: process.env.TWILIO_FROM_NUMBER });
-      if (!r.sent) throw new Error(r.reason === 'sms_gated'
-        ? 'SMS sending is not enabled yet — texting goes live once A2P 10DLC registration is approved.'
-        : 'Twilio not configured');
+      const r = await sendText({ to: contact.phone, body: smsText, locationId });
+      if (!r.sent) throw new Error(smsErrorMessage(r));
 
       messageId = r.sid;
       success   = true;

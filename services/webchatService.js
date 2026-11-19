@@ -227,6 +227,7 @@ async function notifyBusiness(cfg, session, visitorName, visitorPhone, firstMess
   // SMS to visitor if phone provided — bridges conversation to text
   if (visitorPhone && cfg.sms_reply_enabled) {
     const optIn = await sendText({
+      locationId: cfg.location_id,   // from the business's own number
       to: visitorPhone,
       body: `Hi ${name || 'there'}! 👋 Thanks for reaching out to ${businessName}. We'll text you right back at this number. — Powered by SwarmReply`
     });
@@ -331,7 +332,8 @@ async function sendMessage(sessionId, locationId, { body, agentId, agentName, se
       session.sms_reply_enabled) {
     await sendText({
       to: session.visitor_phone,
-      body
+      body,
+      locationId,   // from the business's own number
     });
   }
 

@@ -16,6 +16,7 @@ const { runDueCompetitorScans } = require('./scheduler.competitors');
 const { runDueRankChecks } = require('./scheduler.rank');
 const { generateMonthlyReports } = require('./services/reportService');
 const { runDailySnapshot } = require('./scheduler.snapshot');
+const { runSenderMaintenance } = require('./services/smsSenderService');
 const logger = require('./utils/logger');
 const { captureError } = require('./utils/sentry');
 
@@ -38,6 +39,22 @@ function startScheduler() {
     } catch (error) {
       logger.error('Scheduler: analytics daily snapshot failed:', error.message);
       captureError(error, { job: 'analytics-daily-snapshot' });
+    }
+  });
+
+  // ============================================
+  // JOB -1b: Per-customer texting numbers — every 3 hours, check toll-free
+  // verification results, retry failed provisioning, and provision customers
+  // who completed their business profile. No-op unless
+  // SMS_PROVISIONING_ENABLED=true.
+  // ============================================
+  cron.schedule('15 */3 * * *', async () => {
+    try {
+      const r = await runSenderMaintenance();
+      if (r && !r.skipped) logger.info('Scheduler: SMS sender maintenance ' + JSON.stringify(r));
+    } catch (error) {
+      logger.error('Scheduler: SMS sender maintenance failed:', error.message);
+      captureError(error, { job: 'sms-sender-maintenance' });
     }
   });
 

@@ -919,6 +919,59 @@ router.delete('/admin-users/:id', requireOwner, async (req, res) => {
 });
 
 
+
+// ── Per-customer texting numbers (toll-free) ─────────────────────────────────
+// GET  /api/admin/sms/senders                       all senders (?status=rejected)
+// POST /api/admin/sms/senders/:customerId/provision retry provisioning now
+// POST /api/admin/sms/senders/:customerId/release   give the number back to Twilio
+// POST /api/admin/sms/senders/refresh               run the scheduler job now
+router.get('/sms/senders', requireAdmin, async (req, res) => {
+  try {
+    const smsSender = require('../services/smsSenderService');
+    const senders = await smsSender.listSenders({ status: req.query.status || null });
+    res.json({
+      provisioningEnabled: smsSender.provisioningEnabled(),
+      sendingEnabled: process.env.SMS_ENABLED === 'true',
+      missingConfig: smsSender.missingConfig(),
+      senders,
+    });
+  } catch (err) {
+    logger.error('admin sms senders error: ' + err.message);
+    res.status(500).json({ error: 'Failed to load texting numbers' });
+  }
+});
+
+router.post('/sms/senders/refresh', requireAdmin, async (req, res) => {
+  try {
+    const r = await require('../services/smsSenderService').runSenderMaintenance();
+    res.json(r);
+  } catch (err) {
+    logger.error('admin sms refresh error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/sms/senders/:customerId/provision', requireAdmin, async (req, res) => {
+  try {
+    const r = await require('../services/smsSenderService')
+      .provisionForCustomer(req.params.customerId, { force: true });
+    res.status(r.ok ? 200 : 400).json(r);
+  } catch (err) {
+    logger.error('admin sms provision error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/sms/senders/:customerId/release', requireOwner, async (req, res) => {
+  try {
+    const r = await require('../services/smsSenderService').releaseForCustomer(req.params.customerId);
+    res.status(r.ok ? 200 : 502).json(r);
+  } catch (err) {
+    logger.error('admin sms release error: ' + err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
 
 // ── DELETE CUSTOMER ───────────────────────────
