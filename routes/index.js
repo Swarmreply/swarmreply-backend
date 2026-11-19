@@ -14,7 +14,7 @@ const { captureError, captureMessage } = require('../utils/sentry');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { auditLog } = require('../middleware/audit');
-const { sendText, smsStatus } = require('../services/smsGate');
+const { sendText, smsStatus, smsErrorMessage } = require('../services/smsGate');
 const smsCampaignService = require('../services/smsCampaignService');
 
 // ============================================
@@ -1011,6 +1011,12 @@ const stripeWebhookHandler = async (req, res) => {
           );
 
           logger.info(`Customer ${customerId} cancelled — locations deactivated`);
+
+          // Give their texting number back to Twilio so we stop paying for it.
+          if (process.env.SMS_PROVISIONING_ENABLED === 'true') {
+            require('../services/smsSenderService').releaseForCustomer(customerId)
+              .catch(e => logger.error('SMS number release failed: ' + e.message));
+          }
         }
         break;
       }
@@ -1497,15 +1503,10 @@ router.post('/templates/test-send', authenticateToken, async (req, res) => {
 
     if (isPhone) {
       // SMS via Twilio — routed through the central gate
-      const result = await sendText({ to: destination, body: fillVars(template.smsRequest), from: process.env.TWILIO_FROM_NUMBER });
+      const result = await sendText({ to: destination, body: fillVars(template.smsRequest), customerId });
       if (!result.sent) {
-        if (result.reason === 'sms_gated') {
-          return res.status(503).json({ error: 'SMS sending is not enabled yet — texting goes live once A2P 10DLC registration is approved.' });
-        }
-        if (result.reason === 'twilio_not_configured') {
-          return res.status(503).json({ error: 'SMS not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER to Railway env vars.' });
-        }
-        return res.status(502).json({ error: 'SMS send failed: ' + (result.reason || 'unknown') });
+        const code = result.failed ? 502 : 503;
+        return res.status(code).json({ error: smsErrorMessage(result), reason: result.reason });
       }
 
       logger.info('Test SMS sent to ' + destination);

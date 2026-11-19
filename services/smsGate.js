@@ -3,9 +3,14 @@
 // ----------------------------------------------------------------
 // Every outbound text in the app routes through sendText() so that:
 //   1. A single launch gate (SMS_ENABLED) can hard-block ALL sending
-//      until carrier A2P 10DLC registration is approved. Until the
+//      until texting is launched. Until the
 //      env var SMS_ENABLED is exactly "true", nothing is sent.
-//   2. Sends are fail-soft: a Twilio/carrier rejection is caught and
+//   2. Texts to a customer's contacts go out ONLY from that customer's own
+//      verified toll-free number (see smsSenderService.js). Callers pass
+//      customerId or locationId for those. Texts with no customer context
+//      (e.g. alerts to a business owner) use SwarmReply's own
+//      TWILIO_FROM_NUMBER.
+//   3. Sends are fail-soft: a Twilio/carrier rejection is caught and
 //      logged, never thrown — so a blocked or failed text can never
 //      break webchat, review requests, surveys, campaigns, etc.
 // ════════════════════════════════════════════════════════════════
@@ -50,9 +55,17 @@ function smsStatus() {
 
 /**
  * Gated, fail-soft SMS send. NEVER throws.
+ *
+ * @param {object}  opts
+ * @param {string}  opts.to
+ * @param {string}  opts.body
+ * @param {string} [opts.customerId]  send from this customer's own number
+ * @param {string} [opts.locationId]  same, resolved via the location's customer
+ * @param {string} [opts.statusCallback]
  * @returns {Promise<{sent:boolean, skipped?:boolean, failed?:boolean, reason?:string, sid?:string}>}
+ *   reason 'sender_not_verified' = the customer has no approved number yet.
  */
-async function sendText({ to, body, from }) {
+async function sendText({ to, body, customerId, locationId, statusCallback }) {
   if (!to || !body) {
     return { sent: false, skipped: true, reason: 'missing_to_or_body' };
   }
@@ -64,12 +77,20 @@ async function sendText({ to, body, from }) {
   if (!client) {
     return { sent: false, skipped: true, reason: 'twilio_not_configured' };
   }
+
+  let from;
   try {
-    const msg = await client.messages.create({
-      from: from || process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER,
-      to,
-      body
-    });
+    from = await resolveFrom({ customerId, locationId });
+  } catch (err) {
+    console.error('[smsGate] could not resolve sender:', err && err.message ? err.message : err);
+    return { sent: false, failed: true, reason: 'sender_lookup_failed' };
+  }
+  if (from.reason) return { sent: false, skipped: true, reason: from.reason };
+
+  try {
+    const params = { from: from.number, to, body };
+    if (statusCallback) params.statusCallback = statusCallback;
+    const msg = await client.messages.create(params);
     return { sent: true, sid: msg.sid };
   } catch (err) {
     console.error('[smsGate] SMS send failed:', err && err.message ? err.message : err);
@@ -77,4 +98,32 @@ async function sendText({ to, body, from }) {
   }
 }
 
-module.exports = { sendText, smsEnabled, smsLiveDate, smsStatus };
+// Customer context → that customer's approved number, or a reason it can't send.
+// No customer context → SwarmReply's own platform number.
+async function resolveFrom({ customerId, locationId }) {
+  if (customerId || locationId) {
+    const { resolveSender } = require('./smsSenderService');
+    const r = await resolveSender({ customerId, locationId });
+    return r.from ? { number: r.from } : { reason: r.reason || 'sender_not_verified' };
+  }
+  const platform = process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER;
+  return platform ? { number: platform } : { reason: 'twilio_not_configured' };
+}
+
+// Human-readable error for a failed sendText result (used by callers that throw).
+function smsErrorMessage(result) {
+  switch (result && result.reason) {
+    case 'sms_gated':
+      return 'SMS sending is not enabled yet.';
+    case 'twilio_not_configured':
+      return 'SMS is not configured on the server (Twilio credentials missing).';
+    case 'sender_not_verified':
+      return 'Your texting number is not approved yet. Finish "Business texting" in Settings — texts go out once carriers approve it.';
+    case 'unknown_customer':
+      return 'Could not find the account this text belongs to.';
+    default:
+      return 'SMS send failed: ' + ((result && result.reason) || 'unknown');
+  }
+}
+
+module.exports = { sendText, smsEnabled, smsLiveDate, smsStatus, smsErrorMessage };
