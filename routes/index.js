@@ -838,10 +838,11 @@ const stripeWebhookHandler = async (req, res) => {
   const sig = req.headers['stripe-signature'];
 
   // Debug logging
-  logger.info('Webhook received - body type: ' + typeof req.body + ' isBuffer: ' + Buffer.isBuffer(req.body));
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  logger.info('Webhook secret first 8 chars: ' + webhookSecret.substring(0, 8));
-  logger.info('Sig header present: ' + !!sig);
+  if (!webhookSecret) {
+    logger.error('Stripe webhook received but STRIPE_WEBHOOK_SECRET is not set');
+    return res.status(500).json({ error: 'Webhook not configured' });
+  }
 
   let event;
   try {
@@ -1068,10 +1069,11 @@ router.post('/stripe/webhook', stripeWebhookHandler);
  * Map Stripe price IDs to plan names
  */
 function getPlanFromPriceId(priceId) {
+  // SwarmReply sells one per-location plan, so every configured price maps to
+  // 'starter'. Add entries here if separate tiers are introduced.
   const planMap = {
-    'price_starter_id': 'starter',   // Replace with real Stripe price IDs
-    'price_growth_id': 'growth',
-    'price_agency_id': 'agency'
+    [process.env.STRIPE_PRICE_BASE_MONTHLY]: 'starter',
+    [process.env.STRIPE_PRICE_BASE_ANNUAL]:  'starter',
   };
   return planMap[priceId] || 'starter';
 }

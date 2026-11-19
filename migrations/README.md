@@ -35,3 +35,9 @@ review_requests, review_request_sends, review_templates, survey_responses, …)
 already exist in production. New migrations are additive from here forward;
 over time, bring older tables under migration control by adding
 `... IF NOT EXISTS` definitions for them.
+
+## Baseline schema
+
+Run `DATABASE_URL=... ./scripts/dump-baseline-schema.sh` to capture the
+hand-made tables into `database/baseline-schema.sql` (schema only). That file
+is for bootstrapping a brand-new database and is never auto-applied.

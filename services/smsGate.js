@@ -66,7 +66,7 @@ async function sendText({ to, body, from }) {
   }
   try {
     const msg = await client.messages.create({
-      from: from || process.env.TWILIO_PHONE_NUMBER,
+      from: from || process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_PHONE_NUMBER,
       to,
       body
     });
