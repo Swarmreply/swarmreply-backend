@@ -71,6 +71,7 @@ router.get('/config/:token', widgetLimit, async (req, res) => {
     res.set('Cache-Control', 'public, max-age=300');
     res.json({ success: true, config });
   } catch (err) {
+    if (err.code === '22P02') return res.status(404).json({ error: 'Widget not found' });
     logger.error('webchat config error:', err);
     res.status(500).json({ error: 'Server error' });
   }

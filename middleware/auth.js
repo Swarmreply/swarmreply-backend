@@ -63,6 +63,20 @@ async function authenticateToken(req, res, next) {
             });
           }
         }
+        // A 'pending' account registered at signup but has never paid. It may
+        // only finish checkout (and read its onboarding/billing status) until
+        // the first payment clears; the dashboard already routes it there, this
+        // enforces the same rule on the API.
+        if (status === 'pending') {
+          const url = req.originalUrl || req.url || '';
+          const allowed = /\/(billing|checkout|portal|onboarding\/status|customers\/logout|auth\/logout)/i.test(url);
+          if (!allowed) {
+            return res.status(402).json({
+              error: 'Please finish setting up your subscription to use SwarmReply.',
+              code: 'PAYMENT_REQUIRED',
+            });
+          }
+        }
       }
     } catch (e) {
       // Fail open — never lock out a paying customer because of a status lookup hiccup.

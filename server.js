@@ -47,8 +47,6 @@ const PORT = process.env.PORT || 3001;
 // Trust Railway's proxy
 app.set('trust proxy', 1);
 
-// Sentry request handler — must be first middleware
-if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
 const isProd = process.env.NODE_ENV === 'production';
 
 // ============================================
@@ -88,15 +86,26 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS — locked to your frontend only
+// CORS — locked to our own sites, except the public widget endpoints that
+// run on customers' websites (webchat bubble, reputation widget). Those are
+// opened to any origin WITHOUT credentials: they never read cookies and the
+// authenticated routes under the same prefixes still require a Bearer token.
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   'https://app.swarmreply.com',
   'https://admin.swarmreply.com',
+  'https://swarmreply.com',
+  'https://www.swarmreply.com',
   ...(isProd ? [] : ['http://localhost:3000']),
 ].filter(Boolean);
 
-app.use(cors({
+const PUBLIC_CORS_PREFIXES = [
+  '/api/webchat/config/',
+  '/api/webchat/session/',
+  '/api/rep-widget/',
+];
+
+const privateCors = cors({
   origin: (origin, cb) => {
     // Allow no-origin requests (server-to-server, mobile apps)
     if (!origin) return cb(null, true);
@@ -106,9 +115,22 @@ app.use(cors({
   },
   credentials:  true,
   methods:      ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Request-ID'],
+  allowedHeaders: ['Content-Type','Authorization','X-Request-ID','X-CSRF-Token'],
   maxAge:       86400, // preflight cache 24h
-}));
+});
+
+const publicCors = cors({
+  origin: true,          // reflect any origin — embeds live on customer sites
+  credentials: false,
+  methods: ['GET','POST','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Request-ID'],
+  maxAge: 86400,
+});
+
+app.use((req, res, next) => {
+  const isPublic = PUBLIC_CORS_PREFIXES.some((p) => req.path.startsWith(p));
+  return (isPublic ? publicCors : privateCors)(req, res, next);
+});
 
 // Cookie parser (needed for CSRF)
 app.use(cookieParser());
@@ -168,10 +190,18 @@ app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use('/api/integrations/jobber/webhook', express.raw({ type: '*/*' }));
 // HubSpot webhook needs the raw body for v3 signature verification
 app.use('/api/integrations/hubspot/webhook', express.raw({ type: '*/*' }));
+// Square and Shopify sign the exact raw bytes — keep them unparsed too
+app.use('/api/integrations/square/webhook', express.raw({ type: '*/*' }));
+app.use('/api/integrations/shopify/webhook', express.raw({ type: '*/*' }));
 
 // All other routes get JSON
+const RAW_BODY_PATHS = new Set([
+  '/api/webhooks/stripe', '/api/stripe/webhook',
+  '/api/integrations/jobber/webhook', '/api/integrations/hubspot/webhook',
+  '/api/integrations/square/webhook', '/api/integrations/shopify/webhook',
+]);
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook' || req.path === '/api/integrations/jobber/webhook' || req.path === '/api/integrations/hubspot/webhook') return next();
+  if (RAW_BODY_PATHS.has(req.path)) return next();
   express.json({ limit: '10mb' })(req, res, next);
 });
 
@@ -186,7 +216,7 @@ app.get('/api/auth/csrf', generateCsrf);
 // Global input sanitization — strip control chars from all string body values
 // Skip for Stripe webhook — raw body must not be modified
 app.use((req, res, next) => {
-  if (req.path === '/api/webhooks/stripe' || req.path === '/api/stripe/webhook' || req.path === '/api/integrations/jobber/webhook' || req.path === '/api/integrations/hubspot/webhook') return next();
+  if (RAW_BODY_PATHS.has(req.path)) return next();
   sanitizeBody(req, res, next);
 });
 
@@ -197,6 +227,8 @@ app.use((req, res, next) => {
   const skipCsrf = [
     '/api/webhooks/stripe', '/api/stripe/webhook',
     '/api/integrations/jobber/webhook',
+    '/api/integrations/square/webhook',
+    '/api/integrations/shopify/webhook',
     '/api/customers/login', '/api/customers/logout',
     '/api/admin/login',
   ];
@@ -224,6 +256,9 @@ app.post('/admin/login',      adminLimiter, (req, res) => { req.url = '/login'; 
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
+
+// Sentry error handler — must come after all routes, before our error handler
+if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 
 // Global error handler
 app.use((err, req, res, next) => {

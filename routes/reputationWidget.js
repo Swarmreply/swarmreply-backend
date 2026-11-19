@@ -93,6 +93,8 @@ router.get('/:token/data', async (req, res) => {
       ctaText:       cfg.review_cta_text,
     });
   } catch (err) {
+    // A malformed token (e.g. not a UUID) is a bad link, not a server fault.
+    if (err.code === '22P02') return res.status(404).json({ error: 'Widget not found' });
     logger.error('Rep widget data error:', err.message);
     res.status(500).json({ error: 'Failed to load widget' });
   }
@@ -134,7 +136,8 @@ router.get('/:token/badge', async (req, res) => {
   <text x="200" y="58" font-family="system-ui,sans-serif" font-size="7" fill="#c8c4bc">SwarmReply</text>
 </svg>`);
   } catch (err) {
-    res.status(500).send('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+    const status = err.code === '22P02' ? 404 : 500;
+    res.status(status).send('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
   }
 });
 
@@ -158,13 +161,13 @@ router.get('/config', authenticateToken, async (req, res) => {
     if (!locationId) return res.status(404).json({ error: 'No location found' });
 
     const cfg      = await getOrCreateConfig(locationId);
-    const baseUrl  = process.env.FRONTEND_URL || 'https://swarmreply.com';
-    const widgetUrl = `${baseUrl}/rep-widget.js`;
+    // rep-widget.js is served by the marketing site, not the app.
+    const widgetUrl = `${process.env.WIDGET_BASE_URL || 'https://swarmreply.com'}/rep-widget.js`;
 
     const embedCode = `<!-- SwarmReply Reputation Widget -->
 <script src="${widgetUrl}" data-token="${cfg.public_token}" async></script>`;
 
-    const badgeUrl  = `${process.env.BACKEND_URL || ''}/api/rep-widget/${cfg.public_token}/badge`;
+    const badgeUrl  = `${process.env.BACKEND_URL || 'https://api.swarmreply.com'}/api/rep-widget/${cfg.public_token}/badge`;
     const badgeCode = `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cfg.public_token)}" target="_blank">
   <img src="${badgeUrl}" alt="Google Reviews" style="height:64px;border:none"/>
 </a>`;
